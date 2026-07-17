@@ -1,0 +1,13 @@
+{
+  "service": "checkout-api",
+  "owner": "payments-platform",
+  "language": "JavaScript",
+  "entrypoint": "src/server.js",
+  "endpoints": [
+    { "method": "GET", "path": "/health" },
+    { "method": "POST", "path": "/v1/auth/session" },
+    { "method": "POST", "path": "/v1/checkout", "auth": "bearer" }
+  ],
+  "dependencies": ["payment-gateway", "order-store"],
+  "dataModels": ["User", "Order"]
+}

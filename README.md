@@ -32,7 +32,7 @@ npm start
 Open [http://localhost:3000](http://localhost:3000), sign in, then select **Connect repository**. To try the included fixture, use:
 
 ```text
-C:\Users\VISHAL\Desktop\RepoAI OS\repoai-sample-commerce
+C:\Users\USERS\Desktop\RepoAI OS\repoai-sample-commerce
 ```
 
 RepoAI accepts local directories inside the workspace by default. To allow another parent directory, set `REPOAI_REPOSITORY_ROOT` before starting the server. It can also clone public GitHub repository URLs; never include credentials in a URL.

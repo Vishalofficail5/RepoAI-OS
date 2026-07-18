@@ -88,6 +88,8 @@ function showApp(user) {
   document.querySelector('#workspace-name').textContent = `${name.split(/\s+/)[0]}'s workspace`;
   document.querySelector('#workspace-type').textContent = 'Private workspace';
   document.querySelector('#overview-greeting').textContent = `Welcome, ${name.split(/\s+/)[0]}.`;
+  renderConnectedRepositories();
+  renderRepositoryIntelligence(null);
   loginScreen.hidden = true;
   appShell.hidden = false;
 }
@@ -162,6 +164,7 @@ function renderConnectedRepositories() {
   const table = document.querySelector('.repo-table');
   if (connectedRepositories.length === 0) {
     table.innerHTML = '<div class="empty-repositories">No repositories connected yet. Use Connect repository to add your first codebase.</div>';
+    renderRepositoryDetail(null);
     renderOverviewRepositories();
     return;
   }
@@ -661,6 +664,9 @@ function setDarkMode(enabled) {
 }
 
 function renderRepositoryDetail(repository) {
+  const detail = document.querySelector('#repository-detail');
+  detail.hidden = !repository;
+  if (!repository) return;
   const data = repositoryData[repository.id];
   if (!data) return;
   const logo = document.querySelector('#detail-logo');
@@ -795,7 +801,29 @@ function recordQuestion(question) {
 function renderRepositoryAnswer(question, result) {
   lastEvidence = result.evidence;
   document.querySelector('#answer-question').textContent = question;
-  document.querySelector('#answer-content').textContent = result.answer;
+  const answerContent = document.querySelector('#answer-content');
+  answerContent.replaceChildren();
+  const conclusion = document.createElement('p');
+  conclusion.textContent = result.answer;
+  answerContent.append(conclusion);
+  if (result.explanation) {
+    const explanation = document.createElement('p');
+    explanation.textContent = result.explanation;
+    answerContent.append(explanation);
+  }
+  if (Array.isArray(result.nextSteps) && result.nextSteps.length > 0) {
+    const nextSteps = document.createElement('p');
+    const label = document.createElement('strong');
+    label.textContent = 'Next steps';
+    nextSteps.append(label);
+    const list = document.createElement('ul');
+    result.nextSteps.forEach((step) => {
+      const item = document.createElement('li');
+      item.textContent = step;
+      list.append(item);
+    });
+    answerContent.append(nextSteps, list);
+  }
   document.querySelector('#evidence-grid').innerHTML = result.evidence.map((item, index) => `<button class="evidence-card" data-evidence-index="${index}"><svg><use href="#i-file"/></svg><span><strong>${escapeHtml(item.path)}${item.startLine ? `:${item.startLine}-${item.endLine}` : ''}</strong><small>${escapeHtml(item.functions.join(', ') || item.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`).join(', ') || item.terms.join(', '))}</small></span></button>`).join('');
   document.querySelector('.evidence-heading span').textContent = `Grounded in ${result.evidence.length} source files`;
   document.querySelector('.answer-footer').innerHTML = `<span><i></i>${result.confidence} confidence · ${result.source === 'openai' ? 'OpenAI synthesis' : 'Local evidence synthesis'}</span><span>Analyzed codebase</span>`;

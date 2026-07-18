@@ -37,16 +37,18 @@ test('uses a mocked OpenAI response when OpenAI is configured', async () => {
     request = { url, options };
     return {
       ok: true,
-      json: async () => ({ output_text: JSON.stringify({ answer: 'JWT is verified by verifyJwt.', confidence: 'high' }) })
+      json: async () => ({ output_text: JSON.stringify({ answer: 'JWT is verified by verifyJwt.', explanation: 'The function is defined in src/auth.js.', nextSteps: ['Review src/auth.js.'], confidence: 'high' }) })
     };
   };
   try {
     const result = await answerRepositoryQuestion(repository, 'Where is JWT verified?');
     assert.equal(result.source, 'openai');
     assert.equal(result.answer, 'JWT is verified by verifyJwt.');
+    assert.equal(result.explanation, 'The function is defined in src/auth.js.');
     assert.equal(result.confidence, 'high');
     assert.equal(request.url, 'https://api.openai.com/v1/responses');
     assert.equal(JSON.parse(request.options.body).model, 'test-model');
+    assert.match(JSON.parse(request.options.body).input[0].content, /evidence-led answer/);
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment();
@@ -62,6 +64,7 @@ test('falls back to local evidence when the mocked OpenAI request fails', async 
     assert.equal(result.source, 'local');
     assert.match(result.warning, /status 503/);
     assert.ok(result.evidence.length > 0);
+    assert.ok(result.explanation);
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment();

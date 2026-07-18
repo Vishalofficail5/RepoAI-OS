@@ -262,6 +262,7 @@ function renderSecurity(repository, scan) {
   const signals = scan.findings ?? [];
   const counts = ['high', 'medium', 'low'].map((severity) => signals.filter((signal) => signal.severity === severity).length);
   const score = scan.summary?.score ?? Math.max(0, 100 - counts[0] * 15 - counts[1] * 7 - counts[2] * 3);
+  document.querySelector('#view-security .subtitle').textContent = `Findings and remediation guidance for ${repository.name} · ${repository.summary.fileCount} analyzed files.`;
   const scorePanel = document.querySelector('.security-score');
   scorePanel.innerHTML = `<p class="eyebrow">Local security scan</p><strong>${score}<span>/100</span></strong><p>${signals.length > 0 ? `${signals.length} findings need review.` : 'No configured security findings were detected.'}</p><div><i style="width:${score}%"></i></div>`;
   document.querySelector('.security-counts').innerHTML = `<div><span class="finding-count critical">0</span><p>Critical</p></div><div><span class="finding-count high-count">${counts[0]}</span><p>High</p></div><div><span class="finding-count medium-count">${counts[1]}</span><p>Medium</p></div><div><span class="finding-count low-count">${counts[2]}</span><p>Low</p></div>`;
@@ -570,6 +571,9 @@ function setView(viewName) {
   if (!target) return;
   views.forEach((view) => view.classList.toggle('is-visible', view === target));
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.view === viewName));
+  if (viewName === 'security' && activeRepository) {
+    renderSecurity(activeRepository, securityScans[activeRepository.id] ?? { findings: securitySignals(activeRepository) });
+  }
   setSidebarOpen(false);
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }

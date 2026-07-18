@@ -8,14 +8,13 @@ import { createAuth } from './auth.js';
 import { loadEnvironment } from './env.js';
 import { clonePublicGitHubRepository, parseGitHubRepositoryUrl } from './github.js';
 import { generateRepositoryDocumentation } from './documentation.js';
-import { acquireServerLock, getDatabase, mongoConfigured, releaseServerLock, serverLockAvailable } from './db.js';
+import { getDatabase, mongoConfigured } from './db.js';
 import { analyzeGitImpact, analyzeRepository } from './repository.js';
 import { scanRepositorySecurity } from './security.js';
 import { loadInvestigations, loadMcpTokens, loadRepositories, loadSessions, saveInvestigations, saveMcpTokens, saveRepositories, saveSessions, upsertUser } from './store.js';
 
 const rootDirectory = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 await loadEnvironment(rootDirectory);
-await acquireServerLock();
 const repositoryRoot = await realpath(path.resolve(process.env.REPOAI_REPOSITORY_ROOT ?? rootDirectory));
 const cloneDirectory = path.join(rootDirectory, '.repoai-data', 'clones');
 const port = Number(process.env.PORT ?? 3000);
@@ -151,7 +150,6 @@ async function serveStatic(request, response) {
 
 const server = createServer(async (request, response) => {
   try {
-    if (!serverLockAvailable()) return send(response, 503, { error: 'RepoAI is temporarily unavailable' });
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? `localhost:${port}`}`);
     const { pathname } = requestUrl;
     if (request.method === 'GET' && pathname === '/auth/github') {
@@ -301,8 +299,7 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  server.close(async () => {
-    await releaseServerLock().catch((error) => console.error(JSON.stringify({ level: 'error', message: `MongoDB server lock release failed: ${error.message}` })));
+  server.close(() => {
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 10000).unref();

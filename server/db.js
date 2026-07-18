@@ -1,12 +1,8 @@
 import { setServers } from 'node:dns';
-import { randomUUID } from 'node:crypto';
 import { MongoClient, ServerApiVersion } from 'mongodb';
 
 let databasePromise;
 let configuredDnsServers;
-const serverLockOwner = randomUUID();
-let serverLockHeartbeat;
-let serverLockError;
 
 function databaseName() {
   return process.env.MONGODB_DATABASE?.trim() || 'repoai';
@@ -57,44 +53,4 @@ export async function getDatabase() {
     });
   }
   return databasePromise;
-}
-
-export async function acquireServerLock() {
-  const database = await getDatabase();
-  if (!database) return;
-  const locks = database.collection('runtimeLocks');
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + 30000);
-  const result = await locks.updateOne(
-    { _id: 'repoai-server', expiresAt: { $lte: now } },
-    { $set: { owner: serverLockOwner, expiresAt } }
-  );
-  if (result.modifiedCount === 0) {
-    try {
-      await locks.insertOne({ _id: 'repoai-server', owner: serverLockOwner, expiresAt });
-    } catch {
-      throw new Error('Another RepoAI server is already using this MongoDB database. Run a single server instance.');
-    }
-  }
-  serverLockHeartbeat = setInterval(() => {
-    locks.updateOne({ _id: 'repoai-server', owner: serverLockOwner }, { $set: { expiresAt: new Date(Date.now() + 30000) } }).then((heartbeatResult) => {
-      if (heartbeatResult.matchedCount === 0) serverLockError = new Error('MongoDB server lock was lost');
-    }).catch((error) => {
-      serverLockError = error;
-      console.error(JSON.stringify({ level: 'error', message: `MongoDB server lock heartbeat failed: ${error.message}` }));
-    });
-  }, 10000);
-  serverLockHeartbeat.unref();
-}
-
-export function serverLockAvailable() {
-  return !serverLockError;
-}
-
-export async function releaseServerLock() {
-  if (!serverLockHeartbeat) return;
-  clearInterval(serverLockHeartbeat);
-  serverLockHeartbeat = undefined;
-  const database = await getDatabase();
-  if (database) await database.collection('runtimeLocks').deleteOne({ _id: 'repoai-server', owner: serverLockOwner });
 }

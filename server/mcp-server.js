@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 const baseUrl = (process.env.REPOAI_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+const mcpToken = process.env.REPOAI_MCP_TOKEN;
 
 function textResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -18,7 +19,7 @@ async function callRepoAI(path, options = {}) {
   try {
     response = await fetch(`${baseUrl}${path}`, {
       ...options,
-      headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
+      headers: { Accept: 'application/json', ...(mcpToken ? { Authorization: `Bearer ${mcpToken}` } : {}), ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
     });
   } catch {
     throw new Error(`RepoAI API is unavailable at ${baseUrl}. Start RepoAI with npm start, or set REPOAI_BASE_URL.`);

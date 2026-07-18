@@ -10,38 +10,100 @@ const actionModal = document.querySelector('#action-modal');
 const actionModalTitle = document.querySelector('#action-modal-title');
 const actionModalContent = document.querySelector('#action-modal-content');
 const actionModalActions = document.querySelector('#action-modal-actions');
+const appShell = document.querySelector('#app');
+const loginScreen = document.querySelector('#login-screen');
+const loginError = document.querySelector('#login-error');
 let connectedRepositories = [];
 let activeRepositoryId = null;
+let activeRepository = null;
+let activeGraphView = 'systems';
 let lastEvidence = [];
+let authenticatedUser = null;
+let recentQuestions = [];
+let repositoryInvestigations = [];
+const securityScans = {};
+const generatedDocuments = {};
+const repositoryImpacts = {};
 
-const repositoryData = {
-  'web-app': {
-    logo: 'W', className: 'violet', title: 'web-app',
-    description: 'Frontend application for the Acme customer platform.',
-    languages: '<i class="lang-dot ts-dot"></i>TypeScript <i class="lang-dot css-dot"></i>CSS', endpoints: '38 mapped', dependencies: '124 analyzed', contributors: '18 active'
-  },
-  'api-service': {
-    logo: 'A', className: 'blue', title: 'api-service',
-    description: 'Core REST API for users, billing, and account operations.',
-    languages: '<i class="lang-dot ts-dot"></i>TypeScript <i class="lang-dot postgres"></i>PostgreSQL', endpoints: '64 mapped', dependencies: '92 analyzed', contributors: '15 active'
-  },
-  'checkout-service': {
-    logo: 'C', className: 'coral', title: 'checkout-service',
-    description: 'Payment orchestration service for checkout and subscriptions.',
-    languages: '<i class="lang-dot go"></i>Go <i class="lang-dot redis"></i>Redis', endpoints: '12 mapped', dependencies: '48 analyzed', contributors: '7 active'
-  },
-  'data-pipeline': {
-    logo: 'D', className: 'green', title: 'data-pipeline',
-    description: 'Analytics jobs and warehouse transformations.',
-    languages: '<i class="lang-dot python"></i>Python <i class="lang-dot snowflake"></i>SQL', endpoints: '8 mapped', dependencies: '58 analyzed', contributors: '9 active'
-  }
-};
+const repositoryData = {};
 
 async function requestApi(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
-  const body = await response.json();
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 401) showLogin('Your session has ended. Sign in to continue.');
   if (!response.ok) throw new Error(body.error ?? 'RepoAI request failed');
   return body;
+}
+
+function userInitials(name) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || '?';
+}
+
+function formatProvider(provider) {
+  return provider === 'github' ? 'GitHub' : 'OAuth';
+}
+
+function showLogin(message = '') {
+  authenticatedUser = null;
+  connectedRepositories = [];
+  activeRepositoryId = null;
+  activeRepository = null;
+  appShell.hidden = true;
+  loginScreen.hidden = false;
+  loginError.hidden = !message;
+  loginError.textContent = message;
+  setSidebarOpen(false);
+}
+
+function showApp(user) {
+  authenticatedUser = user;
+  const name = user.name || 'RepoAI user';
+  const avatar = document.querySelector('#user-avatar');
+  avatar.textContent = userInitials(name);
+  avatar.classList.toggle('has-image', Boolean(user.avatarUrl));
+  avatar.style.backgroundImage = user.avatarUrl ? `url(${JSON.stringify(user.avatarUrl)})` : '';
+  document.querySelector('#user-name').textContent = name;
+  document.querySelector('#user-provider').textContent = `Signed in with ${formatProvider(user.provider)}`;
+  document.querySelector('#workspace-avatar').textContent = userInitials(name).slice(0, 1);
+  document.querySelector('#workspace-name').textContent = `${name.split(/\s+/)[0]}'s workspace`;
+  document.querySelector('#workspace-type').textContent = 'Private workspace';
+  document.querySelector('#overview-greeting').textContent = `Welcome, ${name.split(/\s+/)[0]}.`;
+  loginScreen.hidden = true;
+  appShell.hidden = false;
+}
+
+async function initializeApp() {
+  try {
+    const response = await fetch('/api/session', { headers: { Accept: 'application/json' } });
+    const body = await response.json().catch(() => ({}));
+    const authError = new URLSearchParams(window.location.search).get('auth_error');
+    if (!response.ok) return showLogin(authError || 'Unable to check your session.');
+    if (!body.user) return showLogin(authError || '');
+    showApp(body.user);
+    await loadConnectedRepositories();
+  } catch {
+    showLogin('RepoAI is unavailable. Start the local server and try again.');
+  }
+}
+
+async function startGitHubOAuth() {
+  try {
+    const response = await fetch('/api/auth/providers', { headers: { Accept: 'application/json' } });
+    const providers = await response.json().catch(() => ({}));
+    if (!response.ok) return showLogin('Unable to start sign-in. Start RepoAI and try again.');
+    if (!providers.github) return showLogin('GitHub OAuth is not configured. Add its client ID, client secret, and SESSION_SECRET to .env, then restart RepoAI.');
+    window.location.assign('/auth/github');
+  } catch {
+    showLogin('Unable to start sign-in. Start RepoAI and try again.');
+  }
+}
+
+async function logout() {
+  try {
+    await fetch('/auth/logout', { method: 'POST' });
+  } finally {
+    showLogin();
+  }
 }
 
 function formatLanguageSummary(languageCounts = {}) {
@@ -77,29 +139,194 @@ function updateRepositoryData(repository, index) {
 }
 
 function renderConnectedRepositories() {
-  if (connectedRepositories.length === 0) return;
   const table = document.querySelector('.repo-table');
-  table.innerHTML = `<div class="repo-table-head"><span>Repository</span><span>Health</span><span>Coverage</span><span>Last analyzed</span><span></span></div>${connectedRepositories.map((repository, index) => {
+  if (connectedRepositories.length === 0) {
+    table.innerHTML = '<div class="empty-repositories">No repositories connected yet. Use Connect repository to add your first codebase.</div>';
+    renderOverviewRepositories();
+    return;
+  }
+  table.innerHTML = `<div class="repo-table-head"><span>Repository</span><span>Analysis</span><span>Endpoints</span><span>Last analyzed</span><span></span></div>${connectedRepositories.map((repository, index) => {
     updateRepositoryData(repository, index);
     const data = repositoryData[repository.id];
-    const coverage = Math.min(100, Math.max(45, Math.round((repository.summary.functionCount / Math.max(1, repository.summary.fileCount)) * 30 + 62)));
-    return `<button class="repo-table-row repo-target" data-repo="${repository.id}"><span class="repo-cell"><span class="repo-logo ${data.className}">${data.logo}</span><span><strong>${escapeHtml(repository.name)}</strong><small><svg><use href="#i-branch"/></svg> ${escapeHtml(repository.branch)}</small></span></span><span><i class="health-dot good-dot"></i>Analyzed <b>${repository.summary.fileCount}</b></span><span class="coverage"><i><b style="width: ${coverage}%"></b></i>${coverage}%</span><span class="analyzed">${formatRelativeTime(repository.analyzedAt)}</span><span><svg class="row-arrow"><use href="#i-chevron"/></svg></span></button>`;
+    return `<button class="repo-table-row repo-target" data-repo="${repository.id}"><span class="repo-cell"><span class="repo-logo ${data.className}">${data.logo}</span><span><strong>${escapeHtml(repository.name)}</strong><small><svg><use href="#i-branch"/></svg> ${escapeHtml(repository.branch)}</small></span></span><span><i class="health-dot good-dot"></i>Analyzed <b>${repository.summary.fileCount}</b></span><span>${repository.summary.endpointCount} mapped</span><span class="analyzed">${formatRelativeTime(repository.analyzedAt)}</span><span><svg class="row-arrow"><use href="#i-chevron"/></svg></span></button>`;
   }).join('')}`;
   renderOverviewRepositories();
 }
 
 function renderOverviewRepositories() {
   const healthList = document.querySelector('.health-list');
-  const overviewCount = document.querySelector('.stats-grid .stat-card:first-child strong');
+  const overviewCard = document.querySelector('.stats-grid .stat-card:first-child');
+  const overviewCount = overviewCard.querySelector('strong');
   const navigationCount = document.querySelector('.nav-item[data-view="repositories"] em');
   overviewCount.textContent = String(connectedRepositories.length);
+  overviewCard.querySelector('small').textContent = connectedRepositories.length === 1 ? '1 private repository' : `${connectedRepositories.length} private repositories`;
   navigationCount.textContent = String(connectedRepositories.length);
+  document.querySelector('.health-panel .panel-heading h2').textContent = 'Repository analysis';
+  document.querySelector('.health-panel .panel-heading p').textContent = 'Latest signals from connected codebases';
+  if (connectedRepositories.length === 0) {
+    healthList.innerHTML = '<p class="empty-repositories">No repositories connected yet.</p>';
+    return;
+  }
   healthList.innerHTML = connectedRepositories.slice(0, 6).map((repository, index) => {
     updateRepositoryData(repository, index);
     const data = repositoryData[repository.id];
-    const score = Math.min(99, Math.max(70, 72 + Math.min(25, repository.summary.fileCount)));
-    return `<button class="health-row repo-target" data-repo="${repository.id}"><span class="repo-logo ${data.className}">${data.logo}</span><span class="health-name"><strong>${escapeHtml(repository.name)}</strong><small>${escapeHtml(repository.branch)} · ${repository.summary.fileCount} files · Updated ${formatRelativeTime(repository.analyzedAt)}</small></span><span class="stack-dots"><i class="dot ts"></i><i class="dot next"></i></span><span class="score good">${score}</span><svg class="row-arrow"><use href="#i-chevron"/></svg></button>`;
+    return `<button class="health-row repo-target" data-repo="${repository.id}"><span class="repo-logo ${data.className}">${data.logo}</span><span class="health-name"><strong>${escapeHtml(repository.name)}</strong><small>${escapeHtml(repository.branch)} · ${repository.summary.fileCount} files · Updated ${formatRelativeTime(repository.analyzedAt)}</small></span><span class="stack-dots"><i class="dot ts"></i><i class="dot next"></i></span><span class="score good">${repository.summary.endpointCount} API</span><svg class="row-arrow"><use href="#i-chevron"/></svg></button>`;
   }).join('');
+}
+
+function documentationFiles(repository) {
+  return repository.files.filter((file) => file.language === 'Markdown' || /(^|\/)(readme|contributing|changelog|license|docs?)\b/i.test(file.path));
+}
+
+function securitySignals(repository) {
+  const rules = [
+    { pattern: /\beval\s*\(/, severity: 'high', title: 'Dynamic code execution', detail: 'Uses eval()' },
+    { pattern: /\bnew\s+Function\s*\(/, severity: 'high', title: 'Dynamic function creation', detail: 'Uses Function constructor' },
+    { pattern: /\b(?:exec|spawn)\s*\(/, severity: 'medium', title: 'Process execution surface', detail: 'Calls a process execution API' },
+    { pattern: /dangerouslySetInnerHTML|\.innerHTML\s*=/, severity: 'medium', title: 'HTML injection surface', detail: 'Writes HTML content directly' }
+  ];
+  return repository.files.flatMap((file) => rules.filter((rule) => rule.pattern.test(file.searchText)).map((rule) => ({ ...rule, path: file.path }))).slice(0, 12);
+}
+
+function setOverviewCard(card, label, value, detail, action, view) {
+  const content = card.querySelector('div');
+  content.querySelector('p').textContent = label;
+  content.querySelector('strong').textContent = String(value);
+  content.querySelector('small').textContent = detail;
+  const button = card.querySelector('button');
+  button.dataset.view = view;
+  button.innerHTML = `${escapeHtml(action)} <svg><use href="#i-arrow"/></svg>`;
+}
+
+function renderCommitPanels(repository) {
+  const commits = repository.git?.commits ?? [];
+  const deploymentPanel = document.querySelector('.deployment-panel');
+  deploymentPanel.querySelector('h2').textContent = 'Recent commits';
+  deploymentPanel.querySelector('.panel-heading p').textContent = `From ${repository.name}`;
+  deploymentPanel.querySelector('.deploy-list').innerHTML = commits.length > 0
+    ? commits.slice(0, 4).map((commit) => `<article class="deploy-row"><span class="deploy-status success"><svg><use href="#i-git"/></svg></span><div><strong>${escapeHtml(commit.message)}</strong><p>${escapeHtml(commit.author)} · ${formatRelativeTime(commit.date)}</p></div><span class="commit">${escapeHtml(commit.sha)}</span><span class="avatar avatar-one">${escapeHtml(userInitials(commit.author).slice(0, 2))}</span></article>`).join('')
+    : '<p class="empty-repositories">No Git commit history is available for this repository.</p>';
+  const footer = deploymentPanel.querySelector('.panel-footer');
+  footer.dataset.view = 'architecture';
+  footer.innerHTML = 'Open architecture <svg><use href="#i-arrow"/></svg>';
+
+  const activityPanel = document.querySelector('.activity-panel');
+  activityPanel.querySelector('h2').textContent = 'Repository activity';
+  activityPanel.querySelector('.panel-heading p').textContent = `Recent commits in ${repository.name}`;
+  activityPanel.querySelector('.activity-list').innerHTML = commits.length > 0
+    ? commits.slice(0, 4).map((commit) => `<article class="activity-row"><span class="activity-icon code"><svg><use href="#i-git"/></svg></span><p><strong>${escapeHtml(commit.author)}</strong> committed ${escapeHtml(commit.message)}<small>${escapeHtml(repository.name)} · ${formatRelativeTime(commit.date)}</small></p><span class="avatar avatar-one">${escapeHtml(userInitials(commit.author).slice(0, 2))}</span></article>`).join('')
+    : '<p class="empty-repositories">No Git activity is available for this repository.</p>';
+}
+
+function renderDocumentation(repository, docs, generated = []) {
+  const documentationPanel = document.querySelector('.docs-coverage');
+  documentationPanel.innerHTML = `<div><p class="eyebrow">Repository documentation</p><strong>${generated.length + docs.length}</strong><p>Generated guides and detected documentation files for ${escapeHtml(repository.name)}.</p></div><div class="coverage-ring"><span>${generated.length}</span></div><div class="coverage-metrics"><span><i class="metric-green"></i>Components <b>${repository.architecture.length}</b></span><span><i class="metric-amber"></i>Endpoints <b>${repository.endpoints.length}</b></span><span><i class="metric-gray"></i>Source files <b>${repository.summary.fileCount}</b></span></div>`;
+
+  const activity = document.querySelector('.docs-activity');
+  activity.querySelector('h2').textContent = 'Repository knowledge';
+  activity.querySelector('.panel-heading p').textContent = `Generated from ${repository.name}`;
+  activity.querySelector('.docs-activity-list').innerHTML = `<p><span class="activity-icon docs"><svg><use href="#i-file"/></svg></span><strong>${repository.endpoints.length} endpoints mapped</strong><small>${repository.summary.functionCount} functions were analyzed</small></p><p><span class="activity-icon code"><svg><use href="#i-share"/></svg></span><strong>Architecture map generated</strong><small>${repository.architecture.length} top-level components detected</small></p>`;
+
+  const library = document.querySelector('.document-list');
+  document.querySelector('.documents-panel .panel-heading p').textContent = `Generated from the current analysis of ${repository.name}.`;
+  document.querySelector('.doc-tabs').innerHTML = '';
+  library.innerHTML = generated.length + docs.length > 0
+    ? `${generated.map((document, index) => `<article data-generated-document="${index}"><span class="document-icon api-doc">${escapeHtml(document.type.slice(0, 2).toUpperCase())}</span><div><h3>${escapeHtml(document.title)}</h3><p>Generated from the current repository analysis.</p><small>Updated ${formatRelativeTime(repository.analyzedAt)} · <b>Current</b></small></div><span class="doc-type">${escapeHtml(document.type)}</span><button><svg><use href="#i-chevron"/></svg></button></article>`).join('')}${docs.slice(0, 8).map((file) => `<article data-document-path="${escapeHtml(file.path)}"><span class="document-icon readme">${escapeHtml(fileName(file.path).charAt(0).toUpperCase())}</span><div><h3>${escapeHtml(file.path)}</h3><p>${escapeHtml(`${file.language} file · ${file.lines} lines`)}</p><small>Analyzed ${formatRelativeTime(repository.analyzedAt)} · <b>Mapped</b></small></div><span class="doc-type">${escapeHtml(file.language)}</span><button><svg><use href="#i-chevron"/></svg></button></article>`).join('')}`
+    : '<p class="empty-repositories">No documentation files were detected in this repository.</p>';
+}
+
+function renderSecurity(repository, scan) {
+  const signals = scan.findings ?? [];
+  const counts = ['high', 'medium', 'low'].map((severity) => signals.filter((signal) => signal.severity === severity).length);
+  const score = scan.summary?.score ?? Math.max(0, 100 - counts[0] * 15 - counts[1] * 7 - counts[2] * 3);
+  const scorePanel = document.querySelector('.security-score');
+  scorePanel.innerHTML = `<p class="eyebrow">Local security scan</p><strong>${score}<span>/100</span></strong><p>${signals.length > 0 ? `${signals.length} findings need review.` : 'No configured security findings were detected.'}</p><div><i style="width:${score}%"></i></div>`;
+  document.querySelector('.security-counts').innerHTML = `<div><span class="finding-count critical">0</span><p>Critical</p></div><div><span class="finding-count high-count">${counts[0]}</span><p>High</p></div><div><span class="finding-count medium-count">${counts[1]}</span><p>Medium</p></div><div><span class="finding-count low-count">${counts[2]}</span><p>Low</p></div>`;
+  document.querySelector('.security-findings .panel-heading h2').textContent = 'Security findings';
+  document.querySelector('.security-findings .panel-heading p').textContent = `Detected in ${repository.name} by ${scan.summary?.ruleCount ?? 0} local rules.`;
+  const filter = document.querySelector('.security-findings .panel-heading button');
+  filter.textContent = 'Local rules';
+  filter.disabled = true;
+  document.querySelector('.finding-list').innerHTML = signals.length > 0
+    ? signals.map((signal) => `<article><span class="finding-severity ${signal.severity === 'high' ? 'high-finding' : signal.severity === 'medium' ? 'medium-finding' : 'low-finding'}"><svg><use href="#i-alert"/></svg></span><div><p><span class="severity ${signal.severity}">${escapeHtml(signal.severity)}</span><span class="finding-category">${escapeHtml(signal.category)}</span></p><h3>${escapeHtml(signal.title)}</h3><small>${escapeHtml(signal.path)}:${signal.startLine} · ${escapeHtml(signal.detail)}</small></div><div class="finding-meta"><span>Local rule</span><button data-question="Explain ${escapeHtml(signal.title)} in ${escapeHtml(signal.path)}">Explore <svg><use href="#i-arrow"/></svg></button></div></article>`).join('')
+    : '<p class="empty-repositories">No configured security findings were detected. This is not a full security audit.</p>';
+}
+
+function repositoryQuestions(repository) {
+  const endpoint = repository.endpoints[0];
+  const component = repository.architecture[0];
+  return [
+    `Summarize ${repository.name}`,
+    endpoint ? `What does ${endpoint.method} ${endpoint.path} do?` : `What are the main functions in ${repository.name}?`,
+    component ? `How is ${component.label} connected in ${repository.name}?` : `What are the key dependencies in ${repository.name}?`
+  ];
+}
+
+function renderSearchViews(repository) {
+  const questions = repositoryQuestions(repository);
+  document.querySelector('.search-page-heading > p:last-child').textContent = `Search code, architecture, and Git history in ${repository.name}.`;
+  document.querySelector('#ai-question').placeholder = `Ask about ${repository.name}...`;
+  document.querySelector('.ask-input span').textContent = questions[0];
+  document.querySelector('.suggestion-chips').innerHTML = questions.map((question) => `<button data-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`).join('');
+  document.querySelector('.search-examples').innerHTML = questions.map((question) => `<button data-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`).join('');
+  const history = recentQuestions.filter((item) => item.repositoryId === repository.id);
+  document.querySelector('.question-list').innerHTML = history.length > 0
+    ? history.map((item) => `<button data-question="${escapeHtml(item.question)}"><span class="question-icon"><svg><use href="#i-search"/></svg></span><span><strong>${escapeHtml(item.question)}</strong><small>${escapeHtml(repository.name)} · ${formatRelativeTime(item.askedAt)}</small></span><svg><use href="#i-chevron"/></svg></button>`).join('')
+    : '<p class="empty-repositories">No repository questions yet. Choose a suggestion above to search this codebase.</p>';
+}
+
+function renderEmptyRepositoryIntelligence() {
+  const cards = [...document.querySelectorAll('.stats-grid .stat-card')];
+  document.querySelector('.nav-item[data-view="investigations"] em').textContent = '0';
+  setOverviewCard(cards[1], 'Recent commits', 0, 'Connect a repository to load Git history', 'Connect repository', 'repositories');
+  setOverviewCard(cards[2], 'Documentation files', 0, 'Connect a repository to inspect its documentation', 'Connect repository', 'repositories');
+  setOverviewCard(cards[3], 'Security signals', 0, 'Connect a repository to run a code-pattern scan', 'Connect repository', 'repositories');
+  document.querySelector('.deployment-panel .panel-heading h2').textContent = 'Recent commits';
+  document.querySelector('.deployment-panel .panel-heading p').textContent = 'From the selected repository';
+  document.querySelector('.deploy-list').innerHTML = '<p class="empty-repositories">Connect a repository to load Git commits.</p>';
+  const deployFooter = document.querySelector('.deployment-panel .panel-footer');
+  deployFooter.dataset.view = 'architecture';
+  deployFooter.innerHTML = 'Open architecture <svg><use href="#i-arrow"/></svg>';
+  document.querySelector('.activity-panel .panel-heading h2').textContent = 'Repository activity';
+  document.querySelector('.activity-panel .panel-heading p').textContent = 'Changes from the selected repository';
+  document.querySelector('.activity-list').innerHTML = '<p class="empty-repositories">Connect a repository to load activity.</p>';
+  document.querySelector('.docs-coverage').innerHTML = '<div><p class="eyebrow">Repository documentation</p><strong>0</strong><p>Connect a repository to detect documentation files.</p></div>';
+  document.querySelector('.docs-activity-list').innerHTML = '<p class="empty-repositories">No repository knowledge is available yet.</p>';
+  document.querySelector('.document-list').innerHTML = '<p class="empty-repositories">Connect a repository to build the documentation library.</p>';
+  document.querySelector('.security-score').innerHTML = '<p class="eyebrow">Heuristic code scan</p><strong>—</strong><p>Connect a repository to inspect code-pattern signals.</p>';
+  document.querySelector('.security-counts').innerHTML = '';
+  document.querySelector('.finding-list').innerHTML = '<p class="empty-repositories">No repository scan is available yet.</p>';
+  document.querySelector('.suggestion-chips').innerHTML = '';
+  document.querySelector('.search-examples').innerHTML = '<p class="empty-repositories">Connect a repository before asking a code question.</p>';
+  document.querySelector('.question-list').innerHTML = '<p class="empty-repositories">No repository questions yet.</p>';
+  document.querySelector('.search-page-heading > p:last-child').textContent = 'Connect a repository to search its code and architecture.';
+  document.querySelector('#ai-question').placeholder = 'Connect a repository before asking a question';
+  document.querySelector('.ask-input span').textContent = 'Connect a repository to ask a code question';
+  document.querySelector('.investigation-list').innerHTML = '<p class="empty-repositories">Connect a repository before starting an investigation.</p>';
+  renderInvestigationDetail(null);
+}
+
+function renderRepositoryIntelligence(repository) {
+  if (!repository) {
+    renderEmptyRepositoryIntelligence();
+    document.querySelector('.health-list').innerHTML = '<p class="empty-repositories">Connect a repository to populate workspace intelligence.</p>';
+    renderEmptyGraph();
+    return;
+  }
+  const docs = documentationFiles(repository);
+  const scan = securityScans[repository.id] ?? { findings: securitySignals(repository) };
+  const signals = scan.findings;
+  const commits = repository.git?.commits ?? [];
+  const cards = [...document.querySelectorAll('.stats-grid .stat-card')];
+  document.querySelector('.nav-item[data-view="investigations"] em').textContent = String(repositoryInvestigations.filter((item) => item.repositoryId === repository.id).length);
+  setOverviewCard(cards[1], 'Recent commits', commits.length, commits.length > 0 ? `Latest ${formatRelativeTime(commits[0].date)}` : 'No Git history available', 'View map', 'architecture');
+  setOverviewCard(cards[2], 'Documentation files', docs.length, `${repository.summary.fileCount} source files analyzed`, 'Open docs', 'documentation');
+  setOverviewCard(cards[3], 'Security findings', signals.length, signals.length > 0 ? 'Local review needed' : 'No findings detected', 'View scan', 'security');
+  renderCommitPanels(repository);
+  renderDocumentation(repository, docs, generatedDocuments[repository.id] ?? []);
+  renderSecurity(repository, scan);
+  renderSearchViews(repository);
+  renderInvestigations(repository);
 }
 
 async function loadConnectedRepositories() {
@@ -107,84 +334,210 @@ async function loadConnectedRepositories() {
     const data = await requestApi('/api/repositories');
     connectedRepositories = data.repositories;
     connectedRepositories.forEach(updateRepositoryData);
-    if (connectedRepositories.length > 0 && !activeRepositoryId) activeRepositoryId = connectedRepositories[0].id;
+    if (!connectedRepositories.some((repository) => repository.id === activeRepositoryId)) activeRepositoryId = connectedRepositories[0]?.id ?? null;
     renderConnectedRepositories();
   } catch {
     connectedRepositories = [];
+    activeRepositoryId = null;
+    activeRepository = null;
+    renderGraphView(activeGraphView);
+    return;
+  }
+  try {
+    await loadActiveRepository();
+  } catch {
+    activeRepository = null;
+    renderGraphView(activeGraphView);
   }
 }
 
-const nodeData = {
-  web: { icon: 'i-grid', iconClass: 'ui-icon', kind: 'Frontend', title: 'Web application', description: 'The customer-facing application. Handles routing, UI state, authentication flows, and API requests.', files: '243', dependencies: '18', endpoints: '38', connections: ['API service', 'Auth service'] },
-  api: { icon: 'i-cube', iconClass: 'service-mini', kind: 'Service', title: 'API service', description: 'The core REST API. It owns user, account, and billing workflows for the platform.', files: '168', dependencies: '42', endpoints: '64', connections: ['PostgreSQL', 'Redis', 'Auth service'] },
-  auth: { icon: 'i-shield', iconClass: 'ui-icon', kind: 'Identity service', title: 'Auth service', description: 'Verifies JWTs, manages OAuth callback exchanges, and provides service identity.', files: '61', dependencies: '14', endpoints: '9', connections: ['Web application', 'API service', 'Redis'] },
-  postgres: { icon: 'i-cube', iconClass: 'service-mini', kind: 'Data store', title: 'PostgreSQL', description: 'Primary relational database for application and billing data.', files: '38', dependencies: '7', endpoints: '0', connections: ['API service', 'Auth service'] },
-  redis: { icon: 'i-cube', iconClass: 'service-mini', kind: 'Data store', title: 'Redis', description: 'Low-latency cache for sessions, API response data, and rate limits.', files: '12', dependencies: '4', endpoints: '0', connections: ['API service', 'Auth service'] },
-  stripe: { icon: 'i-external', iconClass: 'service-mini', kind: 'External integration', title: 'Stripe', description: 'Payment authorization and invoicing provider called by the checkout and API services.', files: '17', dependencies: '2', endpoints: '6', connections: ['API service', 'checkout-service'] }
-};
+const nodeData = {};
 
-const graphViews = {
-  systems: {
-    caption: 'Updated from analyzed repository files',
-    lines: '<path d="M190 122 C255 122 242 135 300 135"/><path d="M190 122 C250 122 245 300 300 300"/><path d="M416 135 C485 135 488 112 553 112"/><path d="M416 135 C485 135 488 236 553 236"/><path d="M416 300 C485 300 488 236 553 236"/><path class="dashed" d="M416 300 C470 300 490 362 553 362"/>',
-    nodes: {
-      web: { title: 'Web application', subtitle: 'Next.js · TypeScript', kind: 'Frontend', description: 'The customer-facing application. Handles routing, UI state, authentication flows, and API requests.', style: 'ui-node', position: ['7%', '82px'] },
-      api: { title: 'API service', subtitle: 'Node.js · REST', kind: 'Service', description: 'The core REST API. It owns user, account, and billing workflows for the platform.', style: 'service-node', position: ['39%', '95px'] },
-      auth: { title: 'Auth service', subtitle: 'JWT · OAuth 2.0', kind: 'Identity service', description: 'Verifies JWTs, manages OAuth callback exchanges, and provides service identity.', style: 'service-node', position: ['39%', '260px'] },
-      postgres: { title: 'PostgreSQL', subtitle: 'Primary database', kind: 'Data store', description: 'Primary relational database for application and billing data.', style: 'data-node', position: ['72%', '73px'] },
-      redis: { title: 'Redis', subtitle: 'Session cache', kind: 'Data store', description: 'Low-latency cache for sessions, API response data, and rate limits.', style: 'data-node', position: ['72%', '198px'] },
-      stripe: { title: 'Stripe', subtitle: 'Payment provider', kind: 'External integration', description: 'Payment authorization and invoicing provider called by the checkout and API services.', style: 'integration-node', position: ['72%', '324px'] }
-    }
-  },
-  api: {
-    caption: 'Request flow from client to payment authorization',
-    lines: '<path d="M160 118 C220 118 230 118 290 118"/><path d="M405 118 C465 118 475 118 535 118"/><path d="M650 118 C650 185 590 210 535 250"/><path d="M405 250 C350 250 345 250 290 250"/><path d="M160 250 C120 250 110 190 160 118"/>',
-    nodes: {
-      web: { title: 'Client request', subtitle: 'POST /v1/checkout', kind: 'API caller', description: 'The web application sends the authenticated checkout request with cart items and payment method.', style: 'ui-node', position: ['5%', '82px'] },
-      api: { title: 'Checkout route', subtitle: 'src/routes/checkout.js', kind: 'API endpoint', description: 'The checkout route validates the request and creates an order before authorizing payment.', style: 'service-node', position: ['37%', '82px'] },
-      auth: { title: 'JWT verifier', subtitle: 'src/auth/verifyJwt.js', kind: 'Authentication', description: 'Bearer tokens are verified before the checkout request reaches the business workflow.', style: 'service-node', position: ['69%', '82px'] },
-      postgres: { title: 'Order store', subtitle: 'src/data/orders.js', kind: 'Persistence', description: 'The order store creates a pending order and records the resulting authorization.', style: 'data-node', position: ['69%', '214px'] },
-      redis: { title: 'Payment retry', subtitle: 'src/checkout/retry.js', kind: 'Resilience', description: 'The retry policy retries transient payment gateway failures within a fixed time budget.', style: 'service-node', position: ['37%', '214px'] },
-      stripe: { title: 'Gateway adapter', subtitle: 'authorizePayment.js', kind: 'Payment integration', description: 'The payment authorizer calls the configured gateway and returns the authorization result.', style: 'integration-node', position: ['5%', '214px'] }
-    }
-  },
-  data: {
-    caption: 'Checkout data entities and their relationships',
-    lines: '<path d="M175 115 C255 115 260 115 340 115"/><path d="M455 115 C535 115 540 115 620 115"/><path d="M397 160 C397 222 397 230 397 292"/><path d="M620 160 C570 230 500 255 455 292"/>',
-    nodes: {
-      web: { title: 'User', subtitle: 'id · email · role', kind: 'Entity', description: 'An authenticated user owns checkout activity and is resolved from the verified JWT subject.', style: 'data-node', position: ['7%', '78px'] },
-      api: { title: 'Checkout session', subtitle: 'items · paymentMethod', kind: 'Entity', description: 'The incoming checkout payload holds items and the selected payment method.', style: 'data-node', position: ['39%', '78px'] },
-      auth: { title: 'Order', subtitle: 'id · total · status', kind: 'Entity', description: 'An order starts pending and is marked authorized after successful payment authorization.', style: 'data-node', position: ['71%', '78px'] },
-      postgres: { title: 'Payment authorization', subtitle: 'id · orderId · status', kind: 'Entity', description: 'The authorization links the payment gateway result back to the order record.', style: 'data-node', position: ['39%', '254px'] },
-      redis: { title: 'Order item', subtitle: 'sku · quantity · price', kind: 'Entity', description: 'Each order item contributes to the total passed to the payment gateway.', style: 'data-node', position: ['71%', '254px'] },
-      stripe: { title: 'Payment method', subtitle: 'tokenized reference', kind: 'Entity', description: 'Payment methods are token references supplied by the checkout client.', style: 'integration-node', position: ['7%', '254px'] }
-    }
-  }
-};
+const graphPositions = [['7%', '82px'], ['39%', '82px'], ['71%', '82px'], ['7%', '254px'], ['39%', '254px'], ['71%', '254px']];
+
+function fileName(filePath) {
+  return filePath.split('/').at(-1) || filePath;
+}
+
+function nodeStyle(name) {
+  if (/(app|client|web|ui|frontend|component|view)/i.test(name)) return 'ui-node';
+  if (/(data|db|store|model|schema|entity|repository)/i.test(name)) return 'data-node';
+  if (/(adapter|integration|gateway|external)/i.test(name)) return 'integration-node';
+  return 'service-node';
+}
+
+function nodeIcon(style) {
+  if (style === 'ui-node') return { icon: 'i-grid', iconClass: 'ui-icon' };
+  if (style === 'integration-node') return { icon: 'i-external', iconClass: 'service-mini' };
+  return { icon: 'i-cube', iconClass: 'service-mini' };
+}
+
+function importComponent(filePath, imported) {
+  if (!imported.startsWith('.')) return null;
+  const parts = filePath.split('/').slice(0, -1);
+  imported.split('/').forEach((part) => {
+    if (part === '.' || !part) return;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  });
+  return parts[0] || 'root';
+}
+
+function fileReferences(file) {
+  return [...(file.searchText ?? '').matchAll(/\b(?:src|href)\s*=\s*['"]([^'"?#]+)[^'"]*['"]/gi)].map((match) => match[1]);
+}
+
+function referenceComponent(filePath, reference) {
+  if (/^(?:[a-z]+:|\/\/|#)/i.test(reference)) return null;
+  const parts = reference.startsWith('/') ? [] : filePath.split('/').slice(0, -1);
+  reference.split('/').forEach((part) => {
+    if (part === '.' || !part) return;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  });
+  return parts[0] || 'root';
+}
+
+function componentConnections(repository, component) {
+  const componentIds = new Set(repository.architecture.map((item) => item.id));
+  const componentFiles = new Set(component.files);
+  return [...new Set(repository.files.filter((file) => componentFiles.has(file.path)).flatMap((file) => [
+    ...file.imports.map((item) => importComponent(file.path, item)),
+    ...fileReferences(file).map((item) => referenceComponent(file.path, item))
+  ]).filter((id) => id && id !== component.id && componentIds.has(id)))];
+}
+
+function createComponentNodes(repository) {
+  const components = [...repository.architecture].sort((left, right) => right.fileCount - left.fileCount).slice(0, 6);
+  const labels = new Map(components.map((component) => [component.id, component.label]));
+  return components.map((component, index) => {
+    const connectionIds = componentConnections(repository, component).filter((id) => labels.has(id));
+    const endpointCount = repository.endpoints.filter((endpoint) => component.files.includes(endpoint.file)).length;
+    const style = nodeStyle(component.label);
+    return {
+      id: `system-${index}`,
+      sourceId: component.id,
+      title: component.label,
+      subtitle: `${component.fileCount} analyzed files`,
+      kind: 'Code component',
+      description: `Top-level ${component.label === 'root' ? 'repository files' : `module “${component.label}”`} analyzed from this repository.`,
+      files: component.fileCount,
+      dependencies: component.imports.length,
+      endpoints: endpointCount,
+      style,
+      connections: connectionIds.map((id) => labels.get(id)),
+      connectionIds
+    };
+  });
+}
+
+function createEndpointNodes(repository) {
+  const nodes = repository.endpoints.slice(0, 6).map((endpoint, index) => {
+    const file = repository.files.find((item) => item.path === endpoint.file);
+    return {
+      id: `api-${index}`,
+      sourceId: endpoint.file,
+      title: `${endpoint.method} ${endpoint.path}`,
+      subtitle: endpoint.file,
+      kind: 'API endpoint',
+      description: `Detected ${endpoint.method} endpoint in ${endpoint.file}.`,
+      files: 1,
+      dependencies: file?.imports.length ?? 0,
+      endpoints: 1,
+      style: nodeStyle(endpoint.file),
+      connections: file?.imports.filter((item) => !item.startsWith('.')).slice(0, 3) ?? [],
+      connectionIds: []
+    };
+  });
+  if (nodes.length > 0) return nodes;
+  return repository.files.filter((file) => file.functions.length > 0).slice(0, 6).map((file, index) => ({
+    id: `api-${index}`,
+    sourceId: file.path,
+    title: `${file.functions[0]}()`,
+    subtitle: file.path,
+    kind: 'Code function',
+    description: `Detected function in ${file.path}. No HTTP endpoints were found in this repository.`,
+    files: 1,
+    dependencies: file.imports.length,
+    endpoints: file.endpoints.length,
+    style: nodeStyle(file.path),
+    connections: file.imports.filter((item) => !item.startsWith('.')).slice(0, 3),
+    connectionIds: []
+  }));
+}
+
+function createDataNodes(repository) {
+  const dataFiles = repository.files.filter((file) => /(data|db|store|model|schema|entity|repository)/i.test(file.path));
+  const candidates = (dataFiles.length > 0 ? dataFiles : repository.files).slice(0, 6);
+  return candidates.map((file, index) => ({
+    id: `data-${index}`,
+    sourceId: file.path,
+    title: fileName(file.path),
+    subtitle: `${file.language} · ${file.functions.length} functions`,
+    kind: dataFiles.length > 0 ? 'Data-related module' : 'Source module',
+    description: `Analyzed module ${file.path} with ${file.imports.length} imports and ${file.endpoints.length} endpoints.`,
+    files: 1,
+    dependencies: file.imports.length,
+    endpoints: file.endpoints.length,
+    style: dataFiles.length > 0 ? 'data-node' : nodeStyle(file.path),
+    connections: file.imports.filter((item) => !item.startsWith('.')).slice(0, 3),
+    connectionIds: []
+  }));
+}
+
+function graphLines(nodes) {
+  const nodeIndexes = new Map(nodes.map((node, index) => [node.sourceId, index]));
+  const points = [[190, 122], [416, 122], [650, 122], [190, 294], [416, 294], [650, 294]];
+  const connections = new Set();
+  return nodes.flatMap((node, index) => node.connectionIds.map((connection) => {
+    const targetIndex = nodeIndexes.get(connection);
+    if (targetIndex === undefined || targetIndex === index) return '';
+    const key = [index, targetIndex].sort((left, right) => left - right).join(':');
+    if (connections.has(key)) return '';
+    connections.add(key);
+    const [fromX, fromY] = points[index];
+    const [toX, toY] = points[targetIndex];
+    return `<path d="M${fromX} ${fromY} C${(fromX + toX) / 2} ${fromY} ${(fromX + toX) / 2} ${toY} ${toX} ${toY}"/>`;
+  })).join('');
+}
+
+function graphNodeMarkup(node, index) {
+  const position = graphPositions[index];
+  const icon = nodeIcon(node.style);
+  return `<button class="graph-node ${node.style}" data-node="${escapeHtml(node.id)}" style="left:${position[0]};top:${position[1]}"><span class="node-icon ${icon.iconClass}"><svg><use href="#${icon.icon}"/></svg></span><strong>${escapeHtml(node.title)}</strong><small>${escapeHtml(node.subtitle)}</small></button>`;
+}
+
+function renderEmptyGraph() {
+  const canvas = document.querySelector('#graph-canvas');
+  canvas.innerHTML = '<p class="empty-repositories graph-empty">Connect a repository to generate its architecture map.</p>';
+  document.querySelector('#inspector-kind').textContent = 'Repository intelligence';
+  document.querySelector('#inspector-title').textContent = 'No repository selected';
+  document.querySelector('#inspector-description').textContent = 'Connect a repository to inspect its code components, endpoints, and data-related modules.';
+  document.querySelector('#node-files').textContent = '—';
+  document.querySelector('#node-dependencies').textContent = '—';
+  document.querySelector('#node-endpoints').textContent = '—';
+  document.querySelector('#node-connections').innerHTML = '';
+}
 
 function renderGraphView(viewName) {
-  const view = graphViews[viewName];
-  if (!view) return;
-  const canvas = document.querySelector('#graph-canvas');
-  canvas.querySelector('.graph-lines').innerHTML = view.lines;
-  canvas.querySelector('.graph-caption').textContent = view.caption;
-  Object.entries(view.nodes).forEach(([id, definition]) => {
-    const node = canvas.querySelector(`[data-node="${id}"]`);
-    node.className = `graph-node ${definition.style}`;
-    node.style.left = definition.position[0];
-    node.style.top = definition.position[1];
-    node.querySelector('strong').textContent = definition.title;
-    node.querySelector('small').textContent = definition.subtitle;
-    nodeData[id] = { ...nodeData[id], title: definition.title, kind: definition.kind, description: definition.description };
+  activeGraphView = viewName;
+  if (!activeRepository) return renderEmptyGraph();
+  const nodes = viewName === 'systems' ? createComponentNodes(activeRepository) : viewName === 'api' ? createEndpointNodes(activeRepository) : createDataNodes(activeRepository);
+  if (nodes.length === 0) return renderEmptyGraph();
+  Object.keys(nodeData).forEach((key) => delete nodeData[key]);
+  nodes.forEach((node) => {
+    const icon = nodeIcon(node.style);
+    nodeData[node.id] = { ...node, ...icon };
   });
-  selectNode('web');
+  const captions = {
+    systems: `System map generated from ${activeRepository.summary.fileCount} analyzed files`,
+    api: `${activeRepository.endpoints.length} detected API endpoints in ${activeRepository.name}`,
+    data: `Data modules and source files analyzed in ${activeRepository.name}`
+  };
+  const canvas = document.querySelector('#graph-canvas');
+  canvas.innerHTML = `<svg class="graph-lines" viewBox="0 0 760 480" preserveAspectRatio="none">${graphLines(nodes)}</svg>${nodes.map(graphNodeMarkup).join('')}<span class="graph-caption">${escapeHtml(captions[viewName])}</span>`;
+  selectNode(nodes[0].id);
 }
-
-const investigationData = {
-  checkout: { title: 'Elevated checkout failures', summary: 'Checkout completion errors increased to 8.4% following deployment <code>v2.14.6</code>.', cause: 'Timeout introduced in the payment authorization path', body: 'The new retry wrapper can exceed the downstream Stripe timeout when the initial authorization is slow.', confidence: '92% confidence' },
-  auth: { title: 'Intermittent SSO callback errors', summary: 'SSO callback failures increased after a stricter redirect URI validation rule was merged.', cause: 'Redirect URI normalization differs between identity providers', body: 'The callback handler rejects valid URI variants that include a trailing slash from two configured providers.', confidence: '81% confidence' },
-  jobs: { title: 'Delayed analytics job runs', summary: 'The daily conversion aggregation is completing 47 minutes later than its normal schedule.', cause: 'Warehouse queue saturation is delaying the billing transformation', body: 'A backfill from the customer import worker is consuming available warehouse slots during the scheduled run.', confidence: '74% confidence' }
-};
 
 function setView(viewName) {
   const target = document.querySelector(`#view-${viewName}`);
@@ -252,10 +605,9 @@ function setDarkMode(enabled) {
   try { localStorage.setItem('repoai-dark-mode', enabled ? 'on' : 'off'); } catch { }
 }
 
-function selectRepository(repository) {
-  const data = repositoryData[repository];
+function renderRepositoryDetail(repository) {
+  const data = repositoryData[repository.id];
   if (!data) return;
-  if (connectedRepositories.some((item) => item.id === repository)) activeRepositoryId = repository;
   const logo = document.querySelector('#detail-logo');
   logo.textContent = data.logo;
   logo.className = `repo-logo ${data.className}`;
@@ -265,9 +617,53 @@ function selectRepository(repository) {
   metrics[0].innerHTML = data.languages;
   metrics[1].textContent = data.endpoints;
   metrics[2].textContent = data.dependencies;
-  metrics[3].textContent = data.contributors;
+  metrics[3].textContent = `${repository.testIntelligence?.coveragePercent ?? 0}% test-linked`;
+  const folders = [...(repository.architecture ?? [])].sort((left, right) => right.fileCount - left.fileCount).slice(0, 5);
+  document.querySelector('.folder-list').innerHTML = folders.length > 0
+    ? folders.map((folder) => `<li><svg><use href="#i-file"/></svg>${escapeHtml(folder.label)} <small>${folder.fileCount} files</small></li>`).join('')
+    : '<li>No top-level source components were found.</li>';
+  const signals = [
+    [`${repository.summary.endpointCount} API endpoints detected`, `${repository.summary.fileCount} analyzed files`],
+    [`${repository.summary.importCount} imports mapped`, `${repository.summary.functionCount} functions discovered`],
+    [`Analysis updated ${formatRelativeTime(repository.analyzedAt)}`, repository.git?.branch ?? repository.branch]
+  ];
+  document.querySelector('.signal-list').innerHTML = signals.map(([title, detail], index) => `<li><i class="${index === 0 ? 'signal-purple' : index === 1 ? 'signal-green' : 'signal-blue'}"></i>${escapeHtml(title)} <time>${escapeHtml(detail)}</time></li>`).join('');
+  document.querySelector('#architecture-repository-name').textContent = repository.name;
+}
+
+async function loadActiveRepository() {
+  if (!activeRepositoryId) {
+    activeRepository = null;
+    renderRepositoryIntelligence(null);
+    return;
+  }
+  const repositoryId = activeRepositoryId;
+  const result = await requestApi(`/api/repositories/${repositoryId}`);
+  if (activeRepositoryId !== repositoryId) return;
+  activeRepository = result.repository;
+  const insights = await Promise.allSettled([
+    requestApi(`/api/repositories/${repositoryId}/investigations`),
+    requestApi(`/api/repositories/${repositoryId}/security`),
+    requestApi(`/api/repositories/${repositoryId}/documentation`)
+  ]);
+  if (insights[0].status === 'fulfilled') repositoryInvestigations = [...repositoryInvestigations.filter((item) => item.repositoryId !== repositoryId), ...insights[0].value.investigations];
+  if (insights[1].status === 'fulfilled') securityScans[repositoryId] = insights[1].value.scan;
+  if (insights[2].status === 'fulfilled') generatedDocuments[repositoryId] = insights[2].value.documents;
+  renderRepositoryDetail(activeRepository);
+  renderGraphView(activeGraphView);
+  renderRepositoryIntelligence(activeRepository);
+}
+
+async function selectRepository(repositoryId) {
+  if (!connectedRepositories.some((repository) => repository.id === repositoryId)) return;
+  activeRepositoryId = repositoryId;
   setView('repositories');
   window.setTimeout(() => document.querySelector('#repository-detail').scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+  try {
+    await loadActiveRepository();
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 function selectNode(nodeName) {
@@ -283,71 +679,67 @@ function selectNode(nodeName) {
   document.querySelector('#node-files').textContent = data.files;
   document.querySelector('#node-dependencies').textContent = data.dependencies;
   document.querySelector('#node-endpoints').textContent = data.endpoints;
-  document.querySelector('#node-connections').innerHTML = data.connections.map((name) => `<button><span class="mini-node service-mini">${name.charAt(0)}</span>${name}<svg><use href="#i-chevron"/></svg></button>`).join('');
+  document.querySelector('#node-connections').innerHTML = data.connections.length > 0
+    ? data.connections.map((name) => `<button><span class="mini-node service-mini">${escapeHtml(name.charAt(0))}</span>${escapeHtml(name)}<svg><use href="#i-chevron"/></svg></button>`).join('')
+    : '<p class="empty-repositories">No direct component links were detected.</p>';
 }
 
-function selectInvestigation(name) {
-  const data = investigationData[name];
-  if (!data) return;
-  document.querySelectorAll('.investigation-row').forEach((row) => row.classList.toggle('active', row.dataset.investigation === name));
-  document.querySelector('#investigation-title').textContent = data.title;
-  document.querySelector('#investigation-summary').innerHTML = data.summary;
-  document.querySelector('.finding-callout h3').textContent = data.cause;
-  document.querySelector('.finding-callout p:not(.eyebrow)').textContent = data.body;
-  document.querySelector('.confidence').textContent = data.confidence;
+function renderInvestigationDetail(investigation) {
+  const detail = document.querySelector('.investigation-detail');
+  if (!investigation) {
+    detail.innerHTML = '<div class="investigation-detail-head"><div><p class="eyebrow">Repository intelligence</p><h2>No active investigations</h2><p>Start an investigation to generate evidence from the selected repository.</p></div></div>';
+    return;
+  }
+  const evidence = investigation.evidence ?? [];
+  const commits = investigation.commits ?? [];
+  detail.innerHTML = `<div class="investigation-detail-head"><div><span class="severity medium">Repository analysis</span><p class="eyebrow">Created ${formatRelativeTime(investigation.createdAt)}</p><h2>${escapeHtml(investigation.title)}</h2><p>${escapeHtml(investigation.likelyRootCause)}</p></div></div><div class="finding-callout"><span class="alert-icon"><svg><use href="#i-sparkle"/></svg></span><div><p class="eyebrow">Evidence summary</p><h3>${escapeHtml(investigation.confidence)} confidence</h3><p>Evidence was gathered from the current repository analysis.</p></div></div><div class="investigation-grid"><div><h3>Evidence</h3><div class="timeline">${evidence.length > 0 ? evidence.slice(0, 5).map((item) => `<article><i class="timeline-blue"></i><time>${escapeHtml(item.path)}</time><p><strong>${escapeHtml(item.functions?.join(', ') || item.endpoints?.map((endpoint) => `${endpoint.method} ${endpoint.path}`).join(', ') || 'Relevant source file')}</strong><span>${escapeHtml(item.excerpt?.slice(0, 140) || 'Matched repository evidence')}</span></p></article>`).join('') : '<p class="empty-repositories">No matching evidence was returned.</p>'}</div></div><div><h3>Recent commits</h3><div class="affected-list">${commits.length > 0 ? commits.slice(0, 4).map((commit) => `<div><span class="file-chip"><svg><use href="#i-git"/></svg></span><p><strong>${escapeHtml(commit.message)}</strong><small>${escapeHtml(commit.author)} · ${escapeHtml(commit.sha)}</small></p></div>`).join('') : '<p class="empty-repositories">No Git commits are available.</p>'}</div></div></div>`;
 }
 
-function answerFor(question) {
-  const normalized = question.toLowerCase();
-  if (normalized.includes('checkout') || normalized.includes('payment')) {
-    return {
-      answer: `<p><strong>Checkout failures are most likely caused by the new authorization retry wrapper.</strong> It was deployed in <code>checkout-service v2.14.6</code> at 10:18 AM, immediately before the error rate for <code>POST /v1/checkout</code> rose from 0.6% to 8.4%.</p><p>The retry sequence can run beyond Stripe's downstream timeout when the initial authorization is slow. The failure is isolated to the payment authorization path; cart creation and order persistence remain healthy.</p><ul><li>Cap retries at the remaining downstream request budget.</li><li>Redeploy the fix as <code>v2.14.7</code> and watch authorization p95 latency.</li></ul>`,
-      evidence: [['services/payment/authorization.go', 'Retry behavior changed in PR #184'], ['internal/resilience/retry.go', 'No remaining-time budget is enforced'], ['deployments/v2.14.6', 'Production deployment at 10:18 AM'], ['POST /v1/checkout', 'Error rate increased after deployment']]
-    };
-  }
-  if (normalized.includes('invoice')) {
-    return {
-      answer: `<p><strong>Customer invoices are created by the billing workflow in the API service.</strong> The <code>POST /v1/invoices</code> endpoint validates the account, creates a pending invoice record, and calls the Stripe invoice adapter.</p><p>Invoice creation is owned by <code>src/billing/createInvoice.ts</code>. The process emits an <code>invoice.created</code> event which is consumed by the email notification worker.</p>`,
-      evidence: [['src/billing/createInvoice.ts', 'Primary invoice creation workflow'], ['src/routes/invoices.ts', 'POST /v1/invoices endpoint'], ['adapters/stripe/invoices.ts', 'Stripe invoice adapter'], ['events/invoice.created', 'Notification consumer event']]
-    };
-  }
-  if (normalized.includes('modified') || normalized.includes('recent')) {
-    return {
-      answer: `<p><strong>Jordan Miles made the most recent checkout-related change.</strong> Pull request <code>#184 Add authorization retry behavior</code> was merged at 10:07 AM and deployed in <code>checkout-service v2.14.6</code>.</p><p>The change touched the retry policy and payment authorization client. Priya Lal approved the pull request, and Theo Ramos performed the production deployment.</p>`,
-      evidence: [['PR #184', 'Merged by Jordan Miles at 10:07 AM'], ['services/payment/authorization.go', 'Updated authorization client'], ['internal/resilience/retry.go', 'New retry behavior'], ['deployment v2.14.6', 'Deployed by Theo Ramos']]
-    };
-  }
-  return {
-    answer: `<p><strong>JWT verification happens in the Auth service, before requests reach protected API handlers.</strong> The verification middleware extracts the bearer token, allowlists the signing algorithm, validates issuer and audience claims, and attaches the authenticated principal to the request context.</p><p>The web application performs the OAuth callback exchange, while the API service uses the shared verifier for service-to-service requests. There is one security finding: the API service should explicitly allowlist accepted signing algorithms.</p><ul><li>Primary verifier: <code>src/auth/verify.ts</code></li><li>Route middleware: <code>src/middleware/requireAuth.ts</code></li></ul>`,
-    evidence: [['src/auth/verify.ts', 'JWT signature and claims verification'], ['src/middleware/requireAuth.ts', 'Protected API route middleware'], ['app/auth/callback/route.ts', 'OAuth callback exchange'], ['security/JWT-2026-07', 'Signing algorithm allowlist finding']]
-  };
+function renderInvestigations(repository) {
+  const investigations = repositoryInvestigations.filter((item) => item.repositoryId === repository.id);
+  const list = document.querySelector('.investigation-list');
+  list.innerHTML = `<div class="investigation-list-head"><span>${investigations.length} active</span></div>${investigations.length > 0 ? investigations.map((item) => `<button class="investigation-row${item.id === investigations[0].id ? ' active' : ''}" data-investigation="${escapeHtml(item.id)}"><span class="severity medium">Analysis</span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(repository.name)} · ${formatRelativeTime(item.createdAt)}</small></span><span class="investigation-progress">Evidence gathered</span></button>`).join('') : '<p class="empty-repositories">No active investigations for this repository.</p>'}`;
+  renderInvestigationDetail(investigations[0]);
 }
 
-function renderAnswer(question) {
-  const trimmedQuestion = question.trim() || 'Where is JWT verified?';
-  const result = answerFor(trimmedQuestion);
-  document.querySelector('#answer-question').textContent = trimmedQuestion;
-  document.querySelector('#answer-content').innerHTML = result.answer;
-  document.querySelector('#evidence-grid').innerHTML = result.evidence.map(([source, detail]) => `<button class="evidence-card"><svg><use href="#i-file"/></svg><span><strong>${source}</strong><small>${detail}</small></span></button>`).join('');
+function selectInvestigation(id) {
+  const investigation = repositoryInvestigations.find((item) => item.id === id && item.repositoryId === activeRepositoryId);
+  if (!investigation) return;
+  document.querySelectorAll('.investigation-row').forEach((row) => row.classList.toggle('active', row.dataset.investigation === id));
+  renderInvestigationDetail(investigation);
+}
+
+function renderNoRepositoryAnswer(question) {
+  document.querySelector('#answer-question').textContent = question;
+  document.querySelector('#answer-content').textContent = 'Connect and select a repository before asking a code question.';
+  document.querySelector('#evidence-grid').innerHTML = '';
+  document.querySelector('.evidence-heading span').textContent = 'No repository selected';
+  document.querySelector('.answer-footer').textContent = 'Repository analysis is required';
   document.querySelector('#search-answer').classList.remove('hidden');
-  window.setTimeout(() => document.querySelector('#search-answer').scrollIntoView({ behavior: 'smooth', block: 'start' }), 70);
+}
+
+function recordQuestion(question) {
+  if (!activeRepository) return;
+  recentQuestions = [{ repositoryId: activeRepository.id, question, askedAt: new Date().toISOString() }, ...recentQuestions.filter((item) => item.question !== question || item.repositoryId !== activeRepository.id)].slice(0, 8);
+  renderSearchViews(activeRepository);
 }
 
 function renderRepositoryAnswer(question, result) {
   lastEvidence = result.evidence;
   document.querySelector('#answer-question').textContent = question;
   document.querySelector('#answer-content').textContent = result.answer;
-  document.querySelector('#evidence-grid').innerHTML = result.evidence.map((item, index) => `<button class="evidence-card" data-evidence-index="${index}"><svg><use href="#i-file"/></svg><span><strong>${escapeHtml(item.path)}</strong><small>${escapeHtml(item.functions.join(', ') || item.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`).join(', ') || item.terms.join(', '))}</small></span></button>`).join('');
+  document.querySelector('#evidence-grid').innerHTML = result.evidence.map((item, index) => `<button class="evidence-card" data-evidence-index="${index}"><svg><use href="#i-file"/></svg><span><strong>${escapeHtml(item.path)}${item.startLine ? `:${item.startLine}-${item.endLine}` : ''}</strong><small>${escapeHtml(item.functions.join(', ') || item.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`).join(', ') || item.terms.join(', '))}</small></span></button>`).join('');
   document.querySelector('.evidence-heading span').textContent = `Grounded in ${result.evidence.length} source files`;
   document.querySelector('.answer-footer').innerHTML = `<span><i></i>${result.confidence} confidence · ${result.source === 'openai' ? 'OpenAI synthesis' : 'Local evidence synthesis'}</span><span>Analyzed codebase</span>`;
   document.querySelector('#search-answer').classList.remove('hidden');
+  recordQuestion(question);
   if (result.warning) showToast(result.warning);
   window.setTimeout(() => document.querySelector('#search-answer').scrollIntoView({ behavior: 'smooth', block: 'start' }), 70);
 }
 
 async function askQuestion(question) {
-  const trimmedQuestion = question.trim() || 'Where is JWT verified?';
-  if (!activeRepositoryId) return renderAnswer(trimmedQuestion);
+  const trimmedQuestion = question.trim() || (activeRepository ? repositoryQuestions(activeRepository)[0] : 'Ask a repository question');
+  if (!activeRepositoryId) return renderNoRepositoryAnswer(trimmedQuestion);
   try {
     const result = await requestApi(`/api/repositories/${activeRepositoryId}/search`, { method: 'POST', body: JSON.stringify({ question: trimmedQuestion }) });
     renderRepositoryAnswer(trimmedQuestion, result);
@@ -374,15 +766,23 @@ document.querySelector('.health-list').addEventListener('click', (event) => {
   if (button) selectRepository(button.dataset.repo);
 });
 
-document.querySelectorAll('.graph-node').forEach((button) => {
-  button.addEventListener('click', () => selectNode(button.dataset.node));
+document.querySelector('#graph-canvas').addEventListener('click', (event) => {
+  const node = event.target.closest('.graph-node');
+  if (node) selectNode(node.dataset.node);
 });
 
-document.querySelectorAll('.investigation-row[data-investigation]').forEach((button) => {
-  button.addEventListener('click', () => selectInvestigation(button.dataset.investigation));
+document.querySelector('.investigation-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-investigation]');
+  if (button) selectInvestigation(button.dataset.investigation);
 });
 
 document.querySelector('#open-command').addEventListener('click', openCommand);
+document.querySelector('#github-login').addEventListener('click', startGitHubOAuth);
+document.querySelector('#user-menu').addEventListener('click', () => {
+  const name = authenticatedUser?.name || 'RepoAI user';
+  const provider = formatProvider(authenticatedUser?.provider);
+  openActionModal(name, `<p>Signed in with ${escapeHtml(provider)}.</p><ul><li>Repository analysis is private to this workspace.</li></ul>`, [{ id: 'create-mcp-token', label: 'Create MCP token' }, { id: 'toggle-dark', label: document.body.classList.contains('dark-mode') ? 'Use light mode' : 'Use dark mode' }, { id: 'logout', label: 'Log out', primary: true }, { id: 'close', label: 'Close' }]);
+});
 document.querySelector('#menu-button').addEventListener('click', (event) => {
   event.preventDefault();
   setSidebarOpen(!sidebar.classList.contains('open'));
@@ -427,6 +827,19 @@ document.querySelector('#fit-graph').addEventListener('click', () => {
   showToast('System map fitted to view');
 });
 
+document.querySelector('#analyze-impact').addEventListener('click', async () => {
+  if (!activeRepositoryId) return showToast('Connect a repository before analyzing changes');
+  try {
+    const result = await requestApi(`/api/repositories/${activeRepositoryId}/impact`, { method: 'POST', body: JSON.stringify({}) });
+    repositoryImpacts[activeRepositoryId] = result.impact;
+    const affected = result.impact.affectedFiles.slice(0, 8).map((file) => `<li><strong>${escapeHtml(file.path)}</strong> — ${escapeHtml(file.reason)}${file.tests.length > 0 ? ` · tests: ${escapeHtml(file.tests.join(', '))}` : ''}</li>`).join('');
+    const gaps = result.impact.testGaps.length > 0 ? `<p>Changed or affected source files without linked tests: ${escapeHtml(result.impact.testGaps.join(', '))}</p>` : '<p>Every changed or affected source file has a linked test.</p>';
+    openActionModal('Latest change impact', `<p>${result.impact.changedFiles.length} changed files affect ${result.impact.affectedFiles.length} files and ${result.impact.endpoints.length} endpoints.</p>${gaps}<ul>${affected || '<li>No source files changed.</li>'}</ul>`, [{ id: 'close', label: 'Close', primary: true }]);
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
 document.querySelectorAll('.tab[data-graph]').forEach((tab) => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab[data-graph]').forEach((item) => item.classList.toggle('active', item === tab));
@@ -441,13 +854,13 @@ function askFromInput() {
 
 document.querySelector('#ask-button').addEventListener('click', askFromInput);
 document.querySelector('#ai-question').addEventListener('keydown', (event) => { if (event.key === 'Enter') askFromInput(); });
-document.querySelectorAll('[data-question]').forEach((button) => {
-  button.addEventListener('click', () => {
-    const question = button.dataset.question;
-    setView('search');
-    document.querySelector('#ai-question').value = question;
-    window.setTimeout(() => askQuestion(question), 50);
-  });
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-question]');
+  if (!button) return;
+  const question = button.dataset.question;
+  setView('search');
+  document.querySelector('#ai-question').value = question;
+  window.setTimeout(() => askQuestion(question), 50);
 });
 
 document.querySelector('#copy-answer').addEventListener('click', async () => {
@@ -460,26 +873,37 @@ document.querySelector('#start-investigation').addEventListener('click', async (
   if (!activeRepositoryId) return showToast('Connect a repository before starting an investigation');
   try {
     const result = await requestApi(`/api/repositories/${activeRepositoryId}/investigations`, { method: 'POST', body: JSON.stringify({ question: 'What changed recently and what is affected?' }) });
-    document.querySelector('#investigation-title').textContent = result.title;
-    document.querySelector('#investigation-summary').textContent = result.likelyRootCause;
-    document.querySelector('.confidence').textContent = `${result.confidence} confidence`;
+    const investigation = result.investigation;
+    repositoryInvestigations = [investigation, ...repositoryInvestigations.filter((item) => item.repositoryId !== activeRepositoryId)];
+    renderRepositoryIntelligence(activeRepository);
     showToast('Investigation created from repository evidence');
   } catch (error) {
     showToast(error.message);
   }
 });
 
-document.querySelector('#generate-docs').addEventListener('click', () => {
-  const button = document.querySelector('#generate-docs');
-  button.innerHTML = '<svg><use href="#i-check"/></svg>Documentation generated';
-  button.disabled = true;
-  showToast('Documentation generation complete');
+document.querySelector('#generate-docs').addEventListener('click', async () => {
+  if (!activeRepository) return showToast('Connect a repository before generating documentation');
+  try {
+    const result = await requestApi(`/api/repositories/${activeRepositoryId}/documentation`, { method: 'POST' });
+    generatedDocuments[activeRepositoryId] = result.documents;
+    renderDocumentation(activeRepository, documentationFiles(activeRepository), result.documents);
+    showToast('Repository documentation generated');
+  } catch (error) {
+    showToast(error.message);
+  }
 });
 
-document.querySelector('#run-security-scan').addEventListener('click', () => {
-  const button = document.querySelector('#run-security-scan');
-  button.innerHTML = '<svg><use href="#i-check"/></svg>Scan complete';
-  showToast('Security scan completed — no new findings');
+document.querySelector('#run-security-scan').addEventListener('click', async () => {
+  if (!activeRepository) return showToast('Connect a repository before scanning');
+  try {
+    const result = await requestApi(`/api/repositories/${activeRepositoryId}/security`, { method: 'POST' });
+    securityScans[activeRepositoryId] = result.scan;
+    renderSecurity(activeRepository, result.scan);
+    showToast('Repository security scan completed');
+  } catch (error) {
+    showToast(error.message);
+  }
 });
 
 commandOverlay.addEventListener('click', (event) => { if (event.target === commandOverlay) closeCommand(); });
@@ -489,7 +913,7 @@ document.querySelectorAll('[data-command]').forEach((button) => {
     closeCommand();
     setView(command);
     if (command === 'search') window.setTimeout(() => document.querySelector('#ai-question').focus(), 100);
-    if (command === 'investigations') showToast('New investigation created — gathering repository signals');
+    if (command === 'investigations') document.querySelector('#start-investigation').focus();
   });
 });
 
@@ -531,23 +955,34 @@ document.querySelector('#help-button').addEventListener('click', () => {
 });
 
 document.querySelector('#notifications-button').addEventListener('click', () => {
-  openActionModal('Notifications', '<ul><li>Repository analysis is up to date.</li><li>Checkout investigation has new evidence.</li><li>Documentation coverage increased after the latest scan.</li></ul>', [{ id: 'close', label: 'Mark as read', primary: true }]);
+  const repository = activeRepository;
+  const messages = repository ? [`${escapeHtml(repository.name)} was analyzed ${formatRelativeTime(repository.analyzedAt)}.`, `${repository.summary.fileCount} source files and ${repository.endpoints.length} endpoints are mapped.`, `${repositoryInvestigations.filter((item) => item.repositoryId === repository.id).length} active repository investigations.`] : ['Connect a repository to receive analysis updates.'];
+  openActionModal('Repository updates', `<ul>${messages.map((message) => `<li>${message}</li>`).join('')}</ul>`, [{ id: 'close', label: 'Close', primary: true }]);
 });
 
 document.querySelector('.workspace-switcher').addEventListener('click', () => {
-  openActionModal('Acme, Inc. workspace', '<p>This local workspace contains repositories analyzed by RepoAI. Connect another repository from the Repositories page.</p>', [{ id: 'repositories', label: 'Open repositories', primary: true }]);
+  const workspaceName = authenticatedUser?.name ? `${authenticatedUser.name.split(/\s+/)[0]}'s workspace` : 'Private workspace';
+  openActionModal(workspaceName, `<p>This workspace contains ${connectedRepositories.length} connected repositories owned by your GitHub account.</p>`, [{ id: 'repositories', label: 'Open repositories', primary: true }]);
 });
 
-document.querySelector('#user-menu').addEventListener('click', () => {
-  const darkModeLabel = document.body.classList.contains('dark-mode') ? 'Use light mode' : 'Use dark mode';
-  openActionModal('Vishal', '<p>Workspace administrator</p><ul><li>Local repository analysis is enabled</li><li>OpenAI synthesis is optional</li></ul>', [{ id: 'toggle-dark', label: darkModeLabel, primary: true }, { id: 'close', label: 'Close' }]);
-});
-
-actionModalActions.addEventListener('click', (event) => {
+actionModalActions.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-modal-action]');
   if (!button) return;
   if (button.dataset.modalAction === 'toggle-dark') setDarkMode(!document.body.classList.contains('dark-mode'));
   if (button.dataset.modalAction === 'repositories') setView('repositories');
+  if (button.dataset.modalAction === 'logout') await logout();
+  if (button.dataset.modalAction === 'create-mcp-token') {
+    try {
+      const result = await requestApi('/api/mcp/tokens', { method: 'POST' });
+      actionModalTitle.textContent = 'MCP access token';
+      actionModalContent.innerHTML = `<p>Copy this token now; it will not be shown again.</p><pre class="source-preview">${escapeHtml(result.token)}</pre><p>Expires ${escapeHtml(new Date(result.expiresAt).toLocaleDateString())}. Set it as <code>REPOAI_MCP_TOKEN</code> for the MCP server.</p>`;
+      actionModalActions.innerHTML = '<button class="button primary" data-modal-action="close">Close</button>';
+      return;
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
   closeActionModal();
 });
 
@@ -582,6 +1017,19 @@ document.querySelectorAll('.document-list article').forEach((article) => {
   });
 });
 
+document.querySelector('.document-list').addEventListener('click', (event) => {
+  const article = event.target.closest('[data-document-path], [data-generated-document]');
+  if (!article || !activeRepository) return;
+  if (article.dataset.generatedDocument !== undefined) {
+    const document = generatedDocuments[activeRepository.id]?.[Number(article.dataset.generatedDocument)];
+    if (document) openActionModal(document.title, `<pre class="source-preview">${escapeHtml(document.content)}</pre>`, [{ id: 'close', label: 'Close', primary: true }]);
+    return;
+  }
+  const file = activeRepository.files.find((item) => item.path === article.dataset.documentPath);
+  if (!file) return;
+  openActionModal(file.path, `<p>${escapeHtml(`${file.language} · ${file.lines} lines`)}</p><pre class="source-preview">${escapeHtml(file.searchText || 'No preview is available for this file.')}</pre>`, [{ id: 'close', label: 'Close', primary: true }]);
+});
+
 document.querySelectorAll('.finding-meta button').forEach((button) => {
   button.dataset.handled = 'true';
   button.addEventListener('click', () => {
@@ -607,4 +1055,4 @@ document.querySelectorAll('button').forEach((button) => {
   });
 });
 
-loadConnectedRepositories();
+initializeApp();

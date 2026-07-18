@@ -23,16 +23,20 @@ export function parseGitHubRepositoryUrl(value) {
   return { owner, name, url: `https://github.com/${owner}/${name}.git` };
 }
 
-export async function clonePublicGitHubRepository(repository, cloneDirectory) {
-  await mkdir(cloneDirectory, { recursive: true });
+export function getCloneDestination(repository, cloneDirectory) {
   const suffix = createHash('sha256').update(repository.url).digest('hex').slice(0, 10);
-  const destination = path.join(cloneDirectory, `${repository.owner}--${repository.name}-${suffix}`);
+  return path.join(cloneDirectory, `${repository.owner}--${repository.name}-${suffix}`);
+}
+
+export async function clonePublicGitHubRepository(repository, cloneDirectory, runCommand = execFile) {
+  await mkdir(cloneDirectory, { recursive: true });
+  const destination = getCloneDestination(repository, cloneDirectory);
   try {
     if (existsSync(destination)) {
       if (!existsSync(path.join(destination, '.git'))) throw new Error('Existing clone directory is invalid');
-      await execFile('git', ['-C', destination, 'fetch', '--depth', '1', 'origin'], { windowsHide: true });
+      await runCommand('git', ['-C', destination, 'fetch', '--depth', '1', 'origin'], { windowsHide: true });
     } else {
-      await execFile('git', ['clone', '--depth', '1', repository.url, destination], { windowsHide: true });
+      await runCommand('git', ['clone', '--depth', '1', repository.url, destination], { windowsHide: true });
     }
   } catch (error) {
     const detail = String(error.stderr ?? error.message).replace(/\s+/g, ' ').slice(0, 180);

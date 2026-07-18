@@ -7,13 +7,15 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "mcp": "node server/mcp-server.js",
-    "test": "node --test test/repository.test.js"
+    "migrate:mongodb": "node server/migrate-to-mongodb.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "mongodb": "^7.5.0",
     "zod": "^4.4.3"
   }
 }

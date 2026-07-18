@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { loadMcpTokens, loadRepositories, loadSessions, saveMcpTokens, saveRepositories, saveSessions } from '../server/store.js';
+import { loadMcpTokens, loadRepositories, loadSessions, saveMcpTokens, saveRepositories, saveSessions, upsertRepository } from '../server/store.js';
 
 function restoreEnvironment(name, value) {
   if (value === undefined) delete process.env[name];
@@ -26,6 +26,24 @@ test('uses local JSON storage when MongoDB is not configured', async () => {
     assert.deepEqual(await loadRepositories(), repositories);
     assert.deepEqual(await loadSessions(), sessions);
     assert.deepEqual(await loadMcpTokens(), tokens);
+  } finally {
+    restoreEnvironment('REPOAI_DATA_DIRECTORY', previousDataDirectory);
+    restoreEnvironment('MONGODB_URI', previousMongoUri);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('updates an existing repository for the same owner and path', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'repoai-store-'));
+  const previousDataDirectory = process.env.REPOAI_DATA_DIRECTORY;
+  const previousMongoUri = process.env.MONGODB_URI;
+  process.env.REPOAI_DATA_DIRECTORY = directory;
+  delete process.env.MONGODB_URI;
+  try {
+    const first = await upsertRepository({ id: 'repository-1', ownerId: 'github:1', path: 'C:/projects/demo', name: 'First analysis' });
+    const second = await upsertRepository({ id: 'repository-2', ownerId: 'github:1', path: 'C:/projects/demo', name: 'Updated analysis' });
+    assert.equal(second.id, first.id);
+    assert.deepEqual(await loadRepositories(), [{ ...second, name: 'Updated analysis' }]);
   } finally {
     restoreEnvironment('REPOAI_DATA_DIRECTORY', previousDataDirectory);
     restoreEnvironment('MONGODB_URI', previousMongoUri);

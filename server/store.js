@@ -66,6 +66,25 @@ export async function saveRepositories(repositories) {
   await queueSave(() => saveData('repositories.json', repositories, 'repositories'));
 }
 
+export async function upsertRepository(repository) {
+  const database = await getDatabase();
+  if (database) {
+    const { id, ...data } = structuredClone(repository);
+    const target = database.collection('repositories');
+    await target.updateOne(
+      { ownerId: data.ownerId, path: data.path },
+      { $set: data, $setOnInsert: { id } },
+      { upsert: true }
+    );
+    return applicationDocuments([await target.findOne({ ownerId: data.ownerId, path: data.path })])[0];
+  }
+  const savedRepositories = await loadRepositories();
+  const existing = savedRepositories.find((item) => item.ownerId === repository.ownerId && item.path === repository.path);
+  const savedRepository = { ...repository, id: existing?.id ?? repository.id };
+  await saveRepositories([...savedRepositories.filter((item) => item.ownerId !== savedRepository.ownerId || item.path !== savedRepository.path), savedRepository]);
+  return savedRepository;
+}
+
 export async function loadSessions() {
   return loadData('sessions.json', [], 'sessions', true);
 }

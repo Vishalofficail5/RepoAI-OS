@@ -11,7 +11,7 @@ import { generateRepositoryDocumentation } from './documentation.js';
 import { getDatabase, mongoConfigured } from './db.js';
 import { analyzeGitImpact, analyzeRepository } from './repository.js';
 import { scanRepositorySecurity } from './security.js';
-import { loadInvestigations, loadMcpTokens, loadRepositories, loadSessions, saveInvestigations, saveMcpTokens, saveRepositories, saveSessions, upsertUser } from './store.js';
+import { loadInvestigations, loadMcpTokens, loadRepositories, loadSessions, saveInvestigations, saveMcpTokens, saveSessions, upsertRepository, upsertUser } from './store.js';
 
 const rootDirectory = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 await loadEnvironment(rootDirectory);
@@ -236,9 +236,9 @@ const server = createServer(async (request, response) => {
       const repository = await analyzeRepository(sourcePath, body.name || githubRepository?.name);
       repository.sourceUrl = githubRepository?.url;
       repository.ownerId = request.user.id;
-      repositories = [...repositories.filter((item) => item.ownerId !== request.user.id || item.path !== repository.path), repository];
-      await saveRepositories(repositories);
-      return send(response, 201, { repository: repositorySummary(repository) });
+      const savedRepository = await upsertRepository(repository);
+      repositories = [...repositories.filter((item) => item.ownerId !== request.user.id || item.path !== savedRepository.path), savedRepository];
+      return send(response, 201, { repository: repositorySummary(savedRepository) });
     }
     const match = pathname.match(/^\/api\/repositories\/([^/]+)(?:\/(search|investigations|refresh|impact|security|documentation))?$/);
     if (match) {
@@ -281,9 +281,9 @@ const server = createServer(async (request, response) => {
         refreshed.id = repository.id;
         refreshed.ownerId = repository.ownerId;
         refreshed.sourceUrl = repository.sourceUrl;
-        repositories = repositories.map((item) => item.id === repository.id && item.ownerId === request.user.id ? refreshed : item);
-        await saveRepositories(repositories);
-        return send(response, 200, { repository: repositorySummary(refreshed) });
+        const savedRepository = await upsertRepository(refreshed);
+        repositories = repositories.map((item) => item.id === repository.id && item.ownerId === request.user.id ? savedRepository : item);
+        return send(response, 200, { repository: repositorySummary(savedRepository) });
       }
     }
     return serveStatic(request, response);

@@ -18,7 +18,7 @@ await loadEnvironment(rootDirectory);
 const repositoryRoot = await realpath(path.resolve(process.env.REPOAI_REPOSITORY_ROOT ?? rootDirectory));
 const cloneDirectory = path.join(rootDirectory, '.repoai-data', 'clones');
 const port = Number(process.env.PORT ?? 3000);
-const mimeTypes = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
+const mimeTypes = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.jfif': 'image/jpeg', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
 let repositories = await loadRepositories();
 let investigations = await loadInvestigations();
 let mcpTokens = await loadMcpTokens();

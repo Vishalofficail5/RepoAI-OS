@@ -23,7 +23,7 @@ RepoAI is a local engineering-intelligence application. Connect a repository to 
 ## Setup
 
 ```powershell
-cd "C:\Users\VISHAL\Desktop\RepoAI OS"
+cd "C:\Users\USERS\Desktop\RepoAI OS"
 Copy-Item .env.example .env
 npm install
 npm start

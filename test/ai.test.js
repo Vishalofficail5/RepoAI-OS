@@ -15,6 +15,8 @@ const repository = {
 function setOpenAIEnvironment() {
   const apiKey = process.env.OPENAI_API_KEY;
   const model = process.env.OPENAI_MODEL;
+  const enabled = process.env.REPOAI_OPENAI_ENABLED;
+  process.env.REPOAI_OPENAI_ENABLED = 'true';
   process.env.OPENAI_API_KEY = 'test-key';
   process.env.OPENAI_MODEL = 'test-model';
   return () => {
@@ -22,6 +24,8 @@ function setOpenAIEnvironment() {
     else process.env.OPENAI_API_KEY = apiKey;
     if (model === undefined) delete process.env.OPENAI_MODEL;
     else process.env.OPENAI_MODEL = model;
+    if (enabled === undefined) delete process.env.REPOAI_OPENAI_ENABLED;
+    else process.env.REPOAI_OPENAI_ENABLED = enabled;
   };
 }
 
@@ -61,5 +65,20 @@ test('falls back to local evidence when the mocked OpenAI request fails', async 
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment();
+  }
+});
+
+test('keeps repository excerpts local until OpenAI is explicitly enabled', async () => {
+  const enabled = process.env.REPOAI_OPENAI_ENABLED;
+  const originalFetch = globalThis.fetch;
+  process.env.REPOAI_OPENAI_ENABLED = 'false';
+  globalThis.fetch = async () => { throw new Error('OpenAI should not be called'); };
+  try {
+    const result = await answerRepositoryQuestion(repository, 'Where is JWT verified?');
+    assert.equal(result.source, 'local');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (enabled === undefined) delete process.env.REPOAI_OPENAI_ENABLED;
+    else process.env.REPOAI_OPENAI_ENABLED = enabled;
   }
 });

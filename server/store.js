@@ -1,6 +1,9 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { getDatabase } from './db.js';
+
+let writeQueue = Promise.resolve();
 
 function dataFile(name) {
   const dataDirectory = path.resolve(process.env.REPOAI_DATA_DIRECTORY ?? path.join(process.cwd(), '.repoai-data'));
@@ -26,8 +29,9 @@ async function loadData(name, fallback, collection, expiresAt = false) {
   if (database) return applicationDocuments(await database.collection(collection).find({}).toArray());
   try {
     return JSON.parse(await readFile(dataFile(name), 'utf8'));
-  } catch {
-    return fallback;
+  } catch (error) {
+    if (error.code === 'ENOENT') return fallback;
+    throw error;
   }
 }
 
@@ -35,15 +39,23 @@ async function saveData(name, data, collection, expiresAt = false) {
   const database = await getDatabase();
   if (database) {
     const target = database.collection(collection);
-    await target.deleteMany({});
-    if (data.length > 0) await target.insertMany(databaseDocuments(data, expiresAt));
+    const documents = databaseDocuments(data, expiresAt);
+    const ids = documents.map((document) => document.id);
+    if (documents.length > 0) await target.bulkWrite(documents.map((document) => ({ replaceOne: { filter: { id: document.id }, replacement: document, upsert: true } })));
+    await target.deleteMany(ids.length > 0 ? { id: { $nin: ids } } : {});
     return;
   }
   const targetFile = dataFile(name);
   await mkdir(path.dirname(targetFile), { recursive: true });
-  const temporaryFile = `${targetFile}.${process.pid}.tmp`;
+  const temporaryFile = `${targetFile}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporaryFile, JSON.stringify(data, null, 2));
   await rename(temporaryFile, targetFile);
+}
+
+function queueSave(operation) {
+  const result = writeQueue.then(operation, operation);
+  writeQueue = result.catch(() => {});
+  return result;
 }
 
 export async function loadRepositories() {
@@ -51,7 +63,7 @@ export async function loadRepositories() {
 }
 
 export async function saveRepositories(repositories) {
-  await saveData('repositories.json', repositories, 'repositories');
+  await queueSave(() => saveData('repositories.json', repositories, 'repositories'));
 }
 
 export async function loadSessions() {
@@ -59,7 +71,7 @@ export async function loadSessions() {
 }
 
 export async function saveSessions(sessions) {
-  await saveData('sessions.json', sessions, 'sessions', true);
+  await queueSave(() => saveData('sessions.json', sessions, 'sessions', true));
 }
 
 export async function loadInvestigations() {
@@ -67,7 +79,7 @@ export async function loadInvestigations() {
 }
 
 export async function saveInvestigations(investigations) {
-  await saveData('investigations.json', investigations, 'investigations');
+  await queueSave(() => saveData('investigations.json', investigations, 'investigations'));
 }
 
 export async function loadMcpTokens() {
@@ -75,7 +87,7 @@ export async function loadMcpTokens() {
 }
 
 export async function saveMcpTokens(tokens) {
-  await saveData('mcp-tokens.json', tokens, 'mcpTokens', true);
+  await queueSave(() => saveData('mcp-tokens.json', tokens, 'mcpTokens', true));
 }
 
 export async function upsertUser(user) {

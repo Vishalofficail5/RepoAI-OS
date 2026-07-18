@@ -71,27 +71,27 @@ function lineNumber(text, index, offset) {
 function findingsForRule(file, rule) {
   const chunks = file.chunks?.length > 0 ? file.chunks : [{ startLine: 1, endLine: file.lines, text: file.searchText ?? '' }];
   return chunks.flatMap((chunk) => {
-    const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
-    const match = pattern.exec(chunk.text);
-    if (!match) return [];
-    if (rule.id === 'jwt-algorithm' && /algorithms\s*:/i.test(match[0])) return [];
-    return [{
-      id: `${rule.id}:${file.path}:${lineNumber(chunk.text, match.index, chunk.startLine)}`,
-      severity: rule.severity,
-      category: rule.category,
-      title: rule.title,
-      detail: rule.detail,
-      remediation: rule.remediation,
-      path: file.path,
-      startLine: lineNumber(chunk.text, match.index, chunk.startLine),
-      endLine: lineNumber(chunk.text, match.index + match[0].length, chunk.startLine),
-      excerpt: match[0].slice(0, 240)
-    }];
-  }).slice(0, 1);
+    const pattern = new RegExp(rule.pattern.source, `${rule.pattern.flags.replace('g', '')}g`);
+    return [...chunk.text.matchAll(pattern)].flatMap((match) => {
+      if (rule.id === 'jwt-algorithm' && /algorithms\s*:/i.test(match[0])) return [];
+      return [{
+        id: `${rule.id}:${file.path}:${lineNumber(chunk.text, match.index, chunk.startLine)}`,
+        severity: rule.severity,
+        category: rule.category,
+        title: rule.title,
+        detail: rule.detail,
+        remediation: rule.remediation,
+        path: file.path,
+        startLine: lineNumber(chunk.text, match.index, chunk.startLine),
+        endLine: lineNumber(chunk.text, match.index + match[0].length, chunk.startLine),
+        excerpt: match[0].slice(0, 240)
+      }];
+    });
+  });
 }
 
 export function scanRepositorySecurity(repository) {
-  const findings = repository.files.flatMap((file) => rules.flatMap((rule) => findingsForRule(file, rule)));
+  const findings = [...new Map(repository.files.flatMap((file) => rules.flatMap((rule) => findingsForRule(file, rule))).map((finding) => [finding.id, finding])).values()];
   const counts = Object.fromEntries(['high', 'medium', 'low'].map((severity) => [severity, findings.filter((finding) => finding.severity === severity).length]));
   const score = Math.max(0, 100 - counts.high * 15 - counts.medium * 7 - counts.low * 3);
   return {

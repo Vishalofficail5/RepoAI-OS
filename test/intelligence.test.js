@@ -58,3 +58,10 @@ test('returns actionable local security findings', () => {
   assert.equal(scan.summary.high, 2);
   assert.ok(scan.findings.every((finding) => finding.remediation));
 });
+
+test('returns every security finding in a file', () => {
+  const scan = scanRepositorySecurity({
+    files: [{ path: 'src/config.js', lines: 2, chunks: [{ startLine: 1, endLine: 2, text: "const apiKey = 'super-secret-key';\nconst token = 'another-secret-token';" }] }]
+  });
+  assert.equal(scan.summary.high, 2);
+});

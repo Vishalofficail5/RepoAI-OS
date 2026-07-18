@@ -19,6 +19,7 @@ async function callRepoAI(path, options = {}) {
   try {
     response = await fetch(`${baseUrl}${path}`, {
       ...options,
+      signal: AbortSignal.timeout(30000),
       headers: { Accept: 'application/json', ...(mcpToken ? { Authorization: `Bearer ${mcpToken}` } : {}), ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
     });
   } catch {

@@ -77,3 +77,13 @@ test('handles a GitHub callback with mocked token and profile responses', async 
   assert.equal(storage.records().some((record) => record.type === 'session'), true);
   assert.match(completed.headers['set-cookie'][0], /^repoai_session=/);
 });
+
+test('rejects insecure non-local OAuth base URLs', () => {
+  const storage = createStorage();
+  assert.throws(() => createAuth({
+    loadSessions: storage.load,
+    saveSessions: storage.save,
+    environment: { SESSION_SECRET: 'test-session-secret' },
+    baseUrl: 'http://repoai.example.com'
+  }), /OAuth base URL is invalid/);
+});

@@ -9,6 +9,10 @@ const ignoredDirectories = new Set(['.git', '.next', '.repoai-data', 'coverage',
 const textExtensions = new Set(['.c', '.cpp', '.css', '.go', '.html', '.java', '.js', '.json', '.jsx', '.md', '.mjs', '.py', '.rb', '.rs', '.sql', '.ts', '.tsx', '.yaml', '.yml']);
 const languageNames = { '.css': 'CSS', '.go': 'Go', '.html': 'HTML', '.java': 'Java', '.js': 'JavaScript', '.jsx': 'JavaScript', '.json': 'JSON', '.md': 'Markdown', '.mjs': 'JavaScript', '.py': 'Python', '.rs': 'Rust', '.sql': 'SQL', '.ts': 'TypeScript', '.tsx': 'TypeScript', '.yaml': 'YAML', '.yml': 'YAML' };
 const sourceExtensions = ['.js', '.mjs', '.jsx', '.ts', '.tsx', '.py', '.go', '.java', '.rb', '.rs', '.c', '.cpp'];
+const maximumFileCount = 5000;
+const maximumFileSize = 1024 * 1024;
+const maximumTotalSize = 25 * 1024 * 1024;
+const gitCommandOptions = { encoding: 'utf8', timeout: 30000, windowsHide: true };
 const queryAliases = {
   auth: ['authentication', 'login', 'jwt', 'token'],
   authentication: ['auth', 'login', 'jwt', 'token'],
@@ -35,7 +39,10 @@ async function collectFiles(root, directory = root, files = []) {
       if (!ignoredDirectories.has(entry.name)) await collectFiles(root, entryPath, files);
       continue;
     }
-    if (entry.isFile() && textExtensions.has(path.extname(entry.name).toLowerCase())) files.push(entryPath);
+    if (entry.isFile() && textExtensions.has(path.extname(entry.name).toLowerCase())) {
+      if (files.length >= maximumFileCount) throw new Error(`Repository exceeds the ${maximumFileCount}-file analysis limit`);
+      files.push(entryPath);
+    }
   }
   return files;
 }
@@ -94,14 +101,14 @@ function createArchitecture(files) {
 function getGitMetadata(repositoryPath) {
   if (!existsSync(path.join(repositoryPath, '.git'))) return { commits: [] };
   try {
-    const headCommit = execFileSync('git', ['-C', repositoryPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const log = execFileSync('git', ['-C', repositoryPath, 'log', '--format=%h%x1f%an%x1f%ad%x1f%s', '--date=iso', '-n', '12'], { encoding: 'utf8' });
+    const headCommit = execFileSync('git', ['-C', repositoryPath, 'rev-parse', 'HEAD'], gitCommandOptions).trim();
+    const log = execFileSync('git', ['-C', repositoryPath, 'log', '--format=%h%x1f%an%x1f%ad%x1f%s', '--date=iso', '-n', '12'], gitCommandOptions);
     const commits = log.trim().split('\n').filter(Boolean).map((line) => {
       const [sha, author, date, message] = line.split('\x1f');
       return { sha, author, date, message };
     });
-    const branch = execFileSync('git', ['-C', repositoryPath, 'branch', '--show-current'], { encoding: 'utf8' }).trim() || 'detached';
-    const workingTreeStatus = execFileSync('git', ['-C', repositoryPath, 'status', '--porcelain'], { encoding: 'utf8' }).trim();
+    const branch = execFileSync('git', ['-C', repositoryPath, 'branch', '--show-current'], gitCommandOptions).trim() || 'detached';
+    const workingTreeStatus = execFileSync('git', ['-C', repositoryPath, 'status', '--porcelain'], gitCommandOptions).trim();
     return { branch, commits, headCommit, isClean: workingTreeStatus.length === 0 };
   } catch {
     return { commits: [] };
@@ -164,7 +171,12 @@ export async function analyzeRepository(repositoryPath, label) {
   if (cached) return cached;
   const paths = await collectFiles(root);
   const files = [];
+  let totalSize = 0;
   for (const filePath of paths) {
+    const details = await stat(filePath);
+    if (details.size > maximumFileSize) continue;
+    totalSize += details.size;
+    if (totalSize > maximumTotalSize) throw new Error('Repository exceeds the 25 MB analysis limit');
     const source = await readFile(filePath, 'utf8').catch(() => '');
     if (source.includes('\u0000')) continue;
     files.push(parseFile(root, filePath, source));
@@ -215,14 +227,14 @@ export function searchRepository(repository, question, limit = 6) {
 function resolvedGitReference(repositoryPath, reference) {
   if (typeof reference !== 'string' || !reference.trim() || reference.startsWith('-') || /\s/.test(reference)) throw new Error('Git references must be non-empty revision names');
   try {
-    return execFileSync('git', ['-C', repositoryPath, 'rev-parse', '--verify', `${reference}^{commit}`], { encoding: 'utf8' }).trim();
+    return execFileSync('git', ['-C', repositoryPath, 'rev-parse', '--verify', `${reference}^{commit}`], gitCommandOptions).trim();
   } catch {
     throw new Error(`Git revision “${reference}” was not found`);
   }
 }
 
 function gitDiff(repositoryPath, base, head, argumentsList) {
-  return execFileSync('git', ['-C', repositoryPath, 'diff', ...argumentsList, `${base}...${head}`], { encoding: 'utf8' }).trim();
+  return execFileSync('git', ['-C', repositoryPath, 'diff', ...argumentsList, `${base}...${head}`], gitCommandOptions).trim();
 }
 
 export function analyzeGitImpact(repository, baseReference = 'HEAD~1', headReference = 'HEAD') {

@@ -45,6 +45,7 @@ function normalizeBaseUrl(baseUrl) {
   try {
     const url = new URL(baseUrl);
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Unsupported protocol');
+    if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new Error('HTTPS is required outside localhost');
     return url.toString().replace(/\/$/, '');
   } catch {
     throw createAuthError('OAuth base URL is invalid', 500);
@@ -179,6 +180,7 @@ export function createAuth({
     if (typeof fetchImpl !== 'function') throw createAuthError('OAuth fetch is unavailable', 500);
     const response = await fetchImpl(provider.tokenUrl, {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: provider.clientId,
@@ -197,7 +199,7 @@ export function createAuth({
     const headers = provider.name === 'GitHub'
       ? { accept: 'application/vnd.github+json', authorization: `Bearer ${accessToken}`, 'user-agent': 'RepoAI' }
       : { authorization: `Bearer ${accessToken}` };
-    const response = await fetchImpl(provider.profileUrl, { headers });
+    const response = await fetchImpl(provider.profileUrl, { headers, signal: AbortSignal.timeout(15000) });
     const profile = await response.json().catch(() => ({}));
     if (!response.ok) throw createAuthError(`${provider.name} profile request failed`, 502);
     return profile;

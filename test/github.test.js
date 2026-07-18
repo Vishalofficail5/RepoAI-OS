@@ -28,7 +28,7 @@ test('clones public repositories into a deterministic destination', async () => 
   try {
     await clonePublicGitHubRepository(repository, cloneDirectory, async (...args) => calls.push(args));
     assert.match(path.basename(destination), /^openai--openai-node-[a-f0-9]{10}$/);
-    assert.deepEqual(calls, [['git', ['clone', '--depth', '1', repository.url, destination], { windowsHide: true }]]);
+    assert.deepEqual(calls, [['git', ['clone', '--depth', '1', repository.url, destination], { windowsHide: true, timeout: 120000 }]]);
   } finally {
     await rm(cloneDirectory, { recursive: true, force: true });
   }
@@ -42,7 +42,10 @@ test('updates an existing clone instead of cloning it again', async () => {
   try {
     await mkdir(path.join(destination, '.git'), { recursive: true });
     await clonePublicGitHubRepository(repository, cloneDirectory, async (...args) => calls.push(args));
-    assert.deepEqual(calls, [['git', ['-C', destination, 'fetch', '--depth', '1', 'origin'], { windowsHide: true }]]);
+    assert.deepEqual(calls, [
+      ['git', ['-C', destination, 'fetch', '--depth', '1', 'origin'], { windowsHide: true, timeout: 120000 }],
+      ['git', ['-C', destination, 'reset', '--hard', 'origin/HEAD'], { windowsHide: true, timeout: 120000 }]
+    ]);
   } finally {
     await rm(cloneDirectory, { recursive: true, force: true });
   }

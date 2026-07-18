@@ -43,7 +43,8 @@ Copy `.env.example` to `.env` and set the values needed for your setup.
 
 | Variable | Purpose |
 | --- | --- |
-| `OPENAI_API_KEY` | Enables OpenAI-backed repository answers. |
+| `REPOAI_OPENAI_ENABLED` | Set to `true` only after approving transmission of retrieved repository excerpts to OpenAI. |
+| `OPENAI_API_KEY` | Enables OpenAI-backed repository answers when the explicit opt-in is enabled. |
 | `OPENAI_MODEL` | The OpenAI model used for answers, such as `gpt-5.6`. |
 | `SESSION_SECRET` | Required for authenticated sessions. Use a long random value. |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | Required for GitHub OAuth sign-in. |
@@ -53,9 +54,13 @@ Copy `.env.example` to `.env` and set the values needed for your setup.
 
 OpenAI-backed answers are optional. Without `OPENAI_API_KEY` and `OPENAI_MODEL`, RepoAI continues to return local evidence-based search results.
 
+Set `REPOAI_OPENAI_ENABLED=true` only when your organization permits the selected source excerpts to be sent to OpenAI. RepoAI uses local evidence-based search by default.
+
 ### MongoDB persistence
 
 RepoAI uses MongoDB whenever `MONGODB_URI` is set. On its first successful connection, it creates indexes for users, sessions, repositories, analyses, investigations, and MCP tokens. Sessions and tokens expire automatically based on their `expiresAt` value.
+
+MongoDB mode supports one RepoAI server process per database to prevent competing in-memory snapshots from overwriting data. Put the application behind HTTPS in production; non-local HTTP base URLs are rejected.
 
 1. Create a MongoDB Atlas cluster, database user, and IP access rule.
 2. Copy the Node.js connection string into `.env` and set a database name:

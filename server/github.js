@@ -32,11 +32,12 @@ export async function clonePublicGitHubRepository(repository, cloneDirectory, ru
   await mkdir(cloneDirectory, { recursive: true });
   const destination = getCloneDestination(repository, cloneDirectory);
   try {
-    if (existsSync(destination)) {
-      if (!existsSync(path.join(destination, '.git'))) throw new Error('Existing clone directory is invalid');
-      await runCommand('git', ['-C', destination, 'fetch', '--depth', '1', 'origin'], { windowsHide: true });
+      if (existsSync(destination)) {
+        if (!existsSync(path.join(destination, '.git'))) throw new Error('Existing clone directory is invalid');
+      await runCommand('git', ['-C', destination, 'fetch', '--depth', '1', 'origin'], { windowsHide: true, timeout: 120000 });
+      await runCommand('git', ['-C', destination, 'reset', '--hard', 'origin/HEAD'], { windowsHide: true, timeout: 120000 });
     } else {
-      await runCommand('git', ['clone', '--depth', '1', repository.url, destination], { windowsHide: true });
+      await runCommand('git', ['clone', '--depth', '1', repository.url, destination], { windowsHide: true, timeout: 120000 });
     }
   } catch (error) {
     const detail = String(error.stderr ?? error.message).replace(/\s+/g, ' ').slice(0, 180);

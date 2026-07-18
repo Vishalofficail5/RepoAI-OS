@@ -11,10 +11,11 @@ function localAnswer(question, results) {
 }
 
 async function askOpenAI(question, results) {
-  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return null;
+  if (process.env.REPOAI_OPENAI_ENABLED !== 'true' || !process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) return null;
   const sourceContext = results.map((result, index) => `Source ${index + 1}: ${result.path}\n${result.excerpt}`).join('\n\n');
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
+    signal: AbortSignal.timeout(30000),
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL,

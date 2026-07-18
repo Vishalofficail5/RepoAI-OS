@@ -24,15 +24,35 @@ let repositoryInvestigations = [];
 const securityScans = {};
 const generatedDocuments = {};
 const repositoryImpacts = {};
+const requestTimeoutMs = 30000;
 
 const repositoryData = {};
+let activeRepositoryRequest = null;
+let modalTrigger = null;
 
 async function requestApi(path, options = {}) {
-  const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
-  const body = await response.json().catch(() => ({}));
-  if (response.status === 401) showLogin('Your session has ended. Sign in to continue.');
-  if (!response.ok) throw new Error(body.error ?? 'RepoAI request failed');
-  return body;
+  const { headers = {}, signal, ...requestOptions } = options;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, requestTimeoutMs);
+  const cancel = () => controller.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const response = await fetch(path, { ...requestOptions, headers: { 'Content-Type': 'application/json', ...headers }, signal: controller.signal });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 401) showLogin('Your session has ended. Sign in to continue.');
+    if (!response.ok) throw new Error(body.error ?? 'RepoAI request failed');
+    return body;
+  } catch (error) {
+    if (timedOut) throw new Error('RepoAI took too long to respond. Please try again.');
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 function userInitials(name) {
@@ -340,7 +360,10 @@ async function loadConnectedRepositories() {
     connectedRepositories = [];
     activeRepositoryId = null;
     activeRepository = null;
+    renderConnectedRepositories();
+    renderRepositoryIntelligence(null);
     renderGraphView(activeGraphView);
+    if (authenticatedUser) showToast('Unable to load repositories. Please try again.');
     return;
   }
   try {
@@ -563,38 +586,70 @@ function showToast(message) {
 }
 
 function openCommand() {
+  modalTrigger = document.activeElement;
   commandOverlay.classList.add('open');
   commandOverlay.setAttribute('aria-hidden', 'false');
   window.setTimeout(() => commandInput.focus(), 100);
 }
 
 function closeCommand() {
+  const wasOpen = commandOverlay.classList.contains('open');
   commandOverlay.classList.remove('open');
   commandOverlay.setAttribute('aria-hidden', 'true');
+  if (wasOpen) restoreModalFocus();
 }
 
 function openConnectModal() {
+  modalTrigger = document.activeElement;
   connectModal.classList.add('open');
   connectModal.setAttribute('aria-hidden', 'false');
   window.setTimeout(() => document.querySelector('#repository-url').focus(), 100);
 }
 
 function closeConnectModal() {
+  const wasOpen = connectModal.classList.contains('open');
   connectModal.classList.remove('open');
   connectModal.setAttribute('aria-hidden', 'true');
+  if (wasOpen) restoreModalFocus();
 }
 
 function openActionModal(title, content, actions = []) {
+  modalTrigger = document.activeElement;
   actionModalTitle.textContent = title;
   actionModalContent.innerHTML = content;
-  actionModalActions.innerHTML = actions.map((action) => `<button class="button ${action.primary ? 'primary' : 'secondary'}" data-modal-action="${action.id}">${action.label}</button>`).join('');
+  actionModalActions.innerHTML = actions.map((action) => `<button class="button ${action.primary ? 'primary' : 'secondary'}" data-modal-action="${action.id}">${escapeHtml(action.label)}</button>`).join('');
   actionModal.classList.add('open');
   actionModal.setAttribute('aria-hidden', 'false');
+  window.setTimeout(() => document.querySelector('#action-modal-close').focus(), 0);
 }
 
 function closeActionModal() {
+  const wasOpen = actionModal.classList.contains('open');
   actionModal.classList.remove('open');
   actionModal.setAttribute('aria-hidden', 'true');
+  if (wasOpen) restoreModalFocus();
+}
+
+function restoreModalFocus() {
+  const trigger = modalTrigger;
+  modalTrigger = null;
+  if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
+}
+
+function trapModalFocus(event) {
+  const overlay = document.querySelector('.command-overlay.open, .modal-overlay.open');
+  if (!overlay || event.key !== 'Tab') return;
+  const focusable = [...overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
+  if (focusable.length === 0) return;
+  const current = document.activeElement;
+  const index = focusable.indexOf(current);
+  if (event.shiftKey && (index <= 0 || current === overlay)) {
+    event.preventDefault();
+    focusable.at(-1).focus();
+  } else if (!event.shiftKey && index === focusable.length - 1) {
+    event.preventDefault();
+    focusable[0].focus();
+  }
 }
 
 function setDarkMode(enabled) {
@@ -633,25 +688,38 @@ function renderRepositoryDetail(repository) {
 
 async function loadActiveRepository() {
   if (!activeRepositoryId) {
+    activeRepositoryRequest?.abort();
+    activeRepositoryRequest = null;
     activeRepository = null;
     renderRepositoryIntelligence(null);
     return;
   }
   const repositoryId = activeRepositoryId;
-  const result = await requestApi(`/api/repositories/${repositoryId}`);
+  activeRepositoryRequest?.abort();
+  const controller = new AbortController();
+  activeRepositoryRequest = controller;
+  let result;
+  try {
+    result = await requestApi(`/api/repositories/${repositoryId}`, { signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    throw error;
+  }
   if (activeRepositoryId !== repositoryId) return;
   activeRepository = result.repository;
   const insights = await Promise.allSettled([
-    requestApi(`/api/repositories/${repositoryId}/investigations`),
-    requestApi(`/api/repositories/${repositoryId}/security`),
-    requestApi(`/api/repositories/${repositoryId}/documentation`)
+    requestApi(`/api/repositories/${repositoryId}/investigations`, { signal: controller.signal }),
+    requestApi(`/api/repositories/${repositoryId}/security`, { signal: controller.signal }),
+    requestApi(`/api/repositories/${repositoryId}/documentation`, { signal: controller.signal })
   ]);
+  if (activeRepositoryId !== repositoryId || controller.signal.aborted) return;
   if (insights[0].status === 'fulfilled') repositoryInvestigations = [...repositoryInvestigations.filter((item) => item.repositoryId !== repositoryId), ...insights[0].value.investigations];
   if (insights[1].status === 'fulfilled') securityScans[repositoryId] = insights[1].value.scan;
   if (insights[2].status === 'fulfilled') generatedDocuments[repositoryId] = insights[2].value.documents;
   renderRepositoryDetail(activeRepository);
   renderGraphView(activeGraphView);
   renderRepositoryIntelligence(activeRepository);
+  if (activeRepositoryRequest === controller) activeRepositoryRequest = null;
 }
 
 async function selectRepository(repositoryId) {
@@ -781,7 +849,7 @@ document.querySelector('#github-login').addEventListener('click', startGitHubOAu
 document.querySelector('#user-menu').addEventListener('click', () => {
   const name = authenticatedUser?.name || 'RepoAI user';
   const provider = formatProvider(authenticatedUser?.provider);
-  openActionModal(name, `<p>Signed in with ${escapeHtml(provider)}.</p><ul><li>Repository analysis is private to this workspace.</li></ul>`, [{ id: 'create-mcp-token', label: 'Create MCP token' }, { id: 'toggle-dark', label: document.body.classList.contains('dark-mode') ? 'Use light mode' : 'Use dark mode' }, { id: 'logout', label: 'Log out', primary: true }, { id: 'close', label: 'Close' }]);
+  openActionModal(name, `<p>Signed in with ${escapeHtml(provider)}.</p><ul><li>Repository analysis is private to this workspace.</li></ul>`, [{ id: 'create-mcp-token', label: 'Create MCP token' }, { id: 'manage-mcp-tokens', label: 'Manage MCP tokens' }, { id: 'toggle-dark', label: document.body.classList.contains('dark-mode') ? 'Use light mode' : 'Use dark mode' }, { id: 'logout', label: 'Log out', primary: true }, { id: 'close', label: 'Close' }]);
 });
 document.querySelector('#menu-button').addEventListener('click', (event) => {
   event.preventDefault();
@@ -928,6 +996,7 @@ commandInput.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
+  trapModalFocus(event);
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     openCommand();
@@ -966,6 +1035,17 @@ document.querySelector('.workspace-switcher').addEventListener('click', () => {
 });
 
 actionModalActions.addEventListener('click', async (event) => {
+  const revokeButton = event.target.closest('[data-revoke-mcp-token]');
+  if (revokeButton) {
+    try {
+      await requestApi(`/api/mcp/tokens/${encodeURIComponent(revokeButton.dataset.revokeMcpToken)}`, { method: 'DELETE' });
+      revokeButton.closest('li').remove();
+      showToast('MCP token revoked');
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
   const button = event.target.closest('[data-modal-action]');
   if (!button) return;
   if (button.dataset.modalAction === 'toggle-dark') setDarkMode(!document.body.classList.contains('dark-mode'));
@@ -975,8 +1055,24 @@ actionModalActions.addEventListener('click', async (event) => {
     try {
       const result = await requestApi('/api/mcp/tokens', { method: 'POST' });
       actionModalTitle.textContent = 'MCP access token';
-      actionModalContent.innerHTML = `<p>Copy this token now; it will not be shown again.</p><pre class="source-preview">${escapeHtml(result.token)}</pre><p>Expires ${escapeHtml(new Date(result.expiresAt).toLocaleDateString())}. Set it as <code>REPOAI_MCP_TOKEN</code> for the MCP server.</p>`;
+       actionModalContent.innerHTML = `<p>Copy this token now; it will not be shown again.</p><pre class="source-preview">${escapeHtml(result.token)}</pre><p>Expires ${escapeHtml(new Date(result.expiresAt).toLocaleDateString())}. Set it as <code>REPOAI_MCP_TOKEN</code> for the MCP server.</p>`;
+       actionModalActions.innerHTML = '<button class="button primary" data-modal-action="close">Close</button>';
+       actionModalActions.querySelector('button').focus();
+       return;
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
+  if (button.dataset.modalAction === 'manage-mcp-tokens') {
+    try {
+      const result = await requestApi('/api/mcp/tokens');
+      actionModalTitle.textContent = 'MCP access tokens';
+      actionModalContent.innerHTML = result.tokens.length > 0
+        ? `<ul>${result.tokens.map((token) => `<li>Expires ${escapeHtml(new Date(token.expiresAt).toLocaleDateString())} <button class="text-button" data-revoke-mcp-token="${escapeHtml(token.id)}">Revoke</button></li>`).join('')}</ul>`
+        : '<p>No active MCP tokens.</p>';
       actionModalActions.innerHTML = '<button class="button primary" data-modal-action="close">Close</button>';
+      actionModalActions.querySelector('button').focus();
       return;
     } catch (error) {
       showToast(error.message);

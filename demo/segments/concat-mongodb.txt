@@ -1,8 +1,0 @@
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/01-overview.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/02-repositories.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/03-architecture.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/04-change-impact.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/05-code-search.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/06-security.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/07-documentation.mp4'
-file 'C:/Users/VISHAL/Desktop/RepoAI OS/demo/segments/08-mongodb-persistence.mp4'

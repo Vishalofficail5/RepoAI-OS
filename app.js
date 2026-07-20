@@ -476,21 +476,7 @@ function createEndpointNodes(repository) {
       connectionIds: []
     };
   });
-  if (nodes.length > 0) return nodes;
-  return repository.files.filter((file) => file.functions.length > 0).slice(0, 6).map((file, index) => ({
-    id: `api-${index}`,
-    sourceId: file.path,
-    title: `${file.functions[0]}()`,
-    subtitle: file.path,
-    kind: 'Code function',
-    description: `Detected function in ${file.path}. No HTTP endpoints were found in this repository.`,
-    files: 1,
-    dependencies: file.imports.length,
-    endpoints: file.endpoints.length,
-    style: nodeStyle(file.path),
-    connections: file.imports.filter((item) => !item.startsWith('.')).slice(0, 3),
-    connectionIds: []
-  }));
+  return nodes;
 }
 
 function createDataNodes(repository) {
@@ -534,9 +520,9 @@ function graphNodeMarkup(node, index) {
   return `<button class="graph-node ${node.style}" data-node="${escapeHtml(node.id)}" style="left:${position[0]};top:${position[1]}"><span class="node-icon ${icon.iconClass}"><svg><use href="#${icon.icon}"/></svg></span><strong>${escapeHtml(node.title)}</strong><small>${escapeHtml(node.subtitle)}</small></button>`;
 }
 
-function renderEmptyGraph() {
+function renderEmptyGraph(message = 'Connect a repository to generate its architecture map.') {
   const canvas = document.querySelector('#graph-canvas');
-  canvas.innerHTML = '<p class="empty-repositories graph-empty">Connect a repository to generate its architecture map.</p>';
+  canvas.innerHTML = `<p class="empty-repositories graph-empty">${escapeHtml(message)}</p>`;
   document.querySelector('#inspector-kind').textContent = 'Repository intelligence';
   document.querySelector('#inspector-title').textContent = 'No repository selected';
   document.querySelector('#inspector-description').textContent = 'Connect a repository to inspect its code components, endpoints, and data-related modules.';
@@ -550,7 +536,12 @@ function renderGraphView(viewName) {
   activeGraphView = viewName;
   if (!activeRepository) return renderEmptyGraph();
   const nodes = viewName === 'systems' ? createComponentNodes(activeRepository) : viewName === 'api' ? createEndpointNodes(activeRepository) : createDataNodes(activeRepository);
-  if (nodes.length === 0) return renderEmptyGraph();
+  if (nodes.length === 0) {
+    const message = viewName === 'api'
+      ? 'No HTTP API endpoints were detected in this repository. API flow is available when route handlers are found.'
+      : 'No architecture nodes were generated for this repository.';
+    return renderEmptyGraph(message);
+  }
   Object.keys(nodeData).forEach((key) => delete nodeData[key]);
   nodes.forEach((node) => {
     const icon = nodeIcon(node.style);
